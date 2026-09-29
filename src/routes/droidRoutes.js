@@ -5,6 +5,7 @@ const droidRelayService = require('../services/relay/droidRelayService')
 const sessionHelper = require('../utils/sessionHelper')
 const logger = require('../utils/logger')
 const apiKeyService = require('../services/apiKeyService')
+const { DROID_FACTORY_MODELS } = require('../../config/models')
 
 const router = express.Router()
 
@@ -155,30 +156,16 @@ router.post(['/openai/v1/responses', '/openai/responses'], authenticateApiKey, a
   }
 })
 
-// 模型列表端点（兼容性）
+// 模型列表端点：供 sub2api「同步上游模型」拉取 Factory Anthropic 目录
 router.get('/*/v1/models', authenticateApiKey, async (req, res) => {
   try {
-    // 返回可用的模型列表
-    const models = [
-      {
-        id: 'claude-opus-4-1-20250805',
-        object: 'model',
-        created: Date.now(),
-        owned_by: 'anthropic'
-      },
-      {
-        id: 'claude-sonnet-4-5-20250929',
-        object: 'model',
-        created: Date.now(),
-        owned_by: 'anthropic'
-      },
-      {
-        id: 'gpt-5-2025-08-07',
-        object: 'model',
-        created: Date.now(),
-        owned_by: 'openai'
-      }
-    ]
+    const created = Math.floor(Date.now() / 1000)
+    const models = DROID_FACTORY_MODELS.map((model) => ({
+      id: model.value,
+      object: 'model',
+      created,
+      owned_by: 'anthropic'
+    }))
 
     res.json({
       object: 'list',

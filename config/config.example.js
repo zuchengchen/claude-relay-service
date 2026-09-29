@@ -247,12 +247,12 @@ const config = {
   upstreamError: {
     serviceUnavailableTtlSeconds: parseInt(process.env.UPSTREAM_ERROR_503_TTL_SECONDS) || 60, // 503错误暂停秒数
     serverErrorTtlSeconds: parseInt(process.env.UPSTREAM_ERROR_5XX_TTL_SECONDS) || 300, // 5xx错误暂停秒数
-    overloadTtlSeconds: parseInt(process.env.UPSTREAM_ERROR_OVERLOAD_TTL_SECONDS) || 600, // 529过载暂停秒数
-    authErrorTtlSeconds: parseInt(process.env.UPSTREAM_ERROR_AUTH_TTL_SECONDS) || 1800, // 401/403认证错误暂停秒数
+    overloadTtlSeconds: parseInt(process.env.UPSTREAM_ERROR_OVERLOAD_TTL_SECONDS) || 300, // 529过载暂停秒数
+    authErrorTtlSeconds: parseInt(process.env.UPSTREAM_ERROR_AUTH_TTL_SECONDS) || 300, // 401/403认证错误暂停秒数
     timeoutTtlSeconds: parseInt(process.env.UPSTREAM_ERROR_TIMEOUT_TTL_SECONDS) || 300, // 504超时暂停秒数
     // 上游 retry-after 派生的暂停时长上限（秒）。周级限额的 retry-after 可达数天，
     // 若不钳制会把账号整整下线数天。长时限额应由账号级/模型级限流桶承担。
-    maxCustomTtlSeconds: parseInt(process.env.UPSTREAM_ERROR_MAX_CUSTOM_TTL_SECONDS) || 1800
+    maxCustomTtlSeconds: parseInt(process.env.UPSTREAM_ERROR_MAX_CUSTOM_TTL_SECONDS) || 300
   }
 }
 

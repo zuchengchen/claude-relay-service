@@ -10,8 +10,8 @@ const ERROR_HISTORY_TTL = 3 * 24 * 60 * 60 // 3天
 const DEFAULT_TTL = {
   server_error: 300, // 5xx: 5分钟
   service_unavailable: 60, // 503: 1分钟（默认更短，避免短暂抖动导致长时间不可路由）
-  overload: 600, // 529: 10分钟
-  auth_error: 1800, // 401/403: 30分钟
+  overload: 300, // 529: 5分钟
+  auth_error: 300, // 401/403: 5分钟
   timeout: 300, // 504/网络超时: 5分钟
   rate_limit: 300 // 429: 5分钟（优先使用响应头解析值）
 }
@@ -20,7 +20,7 @@ const DEFAULT_TTL = {
 // temp-unavailable 只用于「短暂抖动」的冷却；而周级限额的 retry-after 可达数天，
 // 直接采纳会把账号整整下线数天，且账号哈希看起来完全正常（该键是独立的 TTL 键），
 // 极难排查。真正的长时限额应由 markAccountRateLimited / 各模型家族限流桶承担。
-const DEFAULT_MAX_CUSTOM_TTL = 1800 // 30 分钟
+const DEFAULT_MAX_CUSTOM_TTL = 300 // 5 分钟
 
 // 延迟加载配置，避免循环依赖
 let _configCache = null
@@ -163,7 +163,7 @@ const classifyError = (statusCode) => {
   if (statusCode === 401 || statusCode === 403) {
     return 'auth_error'
   }
-  if (statusCode === 429) {
+  if (statusCode === 429 || statusCode === 402) {
     return 'rate_limit'
   }
   if (statusCode >= 500) {

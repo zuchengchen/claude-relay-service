@@ -10,9 +10,22 @@ const logger = require('../../utils/logger')
 const runtimeAddon = require('../../utils/runtimeAddon')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
 const { createRequestDetailMeta } = require('../../utils/requestDetailHelper')
+const fixedClaudeCacheRatio = require('../../utils/fixedClaudeCacheRatio')
+const { isClaude5xModel } = require('../../utils/claude5xModel')
+const droidClaudeOpenAICompat = require('../../utils/droidClaudeOpenAICompat')
 
 const SYSTEM_PROMPT = 'You are Droid, an AI software engineering agent built by Factory.'
 const RUNTIME_EVENT_FMT_PAYLOAD = 'fmtPayload'
+
+// Factory 文档中的 Anthropic 模型 ID。Claude Code / sub2api 常用横杠写法，需改成 Factory 的点号或带日期 ID。
+const FACTORY_ANTHROPIC_MODEL_ALIASES = {
+  'claude-fable-5-1': 'claude-fable-5.1',
+  'claude-fable-5.1': 'claude-fable-5.1',
+  'claude-sonnet-4-5': 'claude-sonnet-4-5-20250929',
+  'claude-opus-4-5': 'claude-opus-4-5-20251101',
+  'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
+  'claude-3-5-haiku-20241022': 'claude-haiku-4-5-20251001'
+}
 
 /**
  * Droid API 转发服务
@@ -28,7 +41,7 @@ class DroidRelayService {
       comm: '/o/v1/chat/completions'
     }
 
-    this.userAgent = 'factory-cli/0.32.1'
+    this.userAgent = 'factory-cli/0.229.0'
     this.systemPrompt = SYSTEM_PROMPT
     this.API_KEY_STICKY_PREFIX = 'droid_api_key'
   }
@@ -54,6 +67,73 @@ class DroidRelayService {
     return 'anthropic'
   }
 
+  _isRetryableFactoryGatewayStatus(status) {
+    return status === 502 || status === 504
+  }
+
+  _formatClientError(statusCode, raw) {
+    let parsed = raw
+    if (typeof raw === 'string') {
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        parsed = { detail: raw }
+      }
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      parsed = { detail: String(raw || 'Upstream request failed') }
+    }
+
+    const nestedDetails = parsed.details
+    if (typeof nestedDetails === 'string' && nestedDetails.trim().startsWith('{')) {
+      try {
+        parsed = { ...parsed, ...JSON.parse(nestedDetails) }
+      } catch {
+        // keep original
+      }
+    }
+
+    const message =
+      parsed.detail ||
+      parsed.error?.detail ||
+      (typeof parsed.error?.message === 'string' ? parsed.error.message : '') ||
+      parsed.title ||
+      parsed.message ||
+      (typeof parsed.error === 'string' ? parsed.error : '') ||
+      'Upstream request failed'
+
+    const type =
+      statusCode === 402
+        ? 'insufficient_quota'
+        : parsed.error?.type || parsed.title || 'upstream_error'
+    const code =
+      statusCode === 402
+        ? 'insufficient_quota'
+        : parsed.error?.code || parsed.error || 'upstream_error'
+
+    return {
+      error: {
+        message: typeof message === 'string' ? message : JSON.stringify(message),
+        type: typeof type === 'string' ? type : 'upstream_error',
+        code: typeof code === 'string' ? code : 'upstream_error'
+      }
+    }
+  }
+
+  _mapFactoryAnthropicModel(model) {
+    const trimmed = String(model || '').trim()
+    if (!trimmed) {
+      return trimmed
+    }
+
+    const lower = trimmed.toLowerCase()
+    if (FACTORY_ANTHROPIC_MODEL_ALIASES[lower]) {
+      return FACTORY_ANTHROPIC_MODEL_ALIASES[lower]
+    }
+
+    return trimmed
+  }
+
   _normalizeRequestBody(requestBody, endpointType) {
     if (!requestBody || typeof requestBody !== 'object') {
       return requestBody
@@ -63,14 +143,9 @@ class DroidRelayService {
 
     if (endpointType === 'anthropic' && typeof normalizedBody.model === 'string') {
       const originalModel = normalizedBody.model
-      const trimmedModel = originalModel.trim()
-      const lowerModel = trimmedModel.toLowerCase()
-
-      if (lowerModel.includes('haiku')) {
-        const mappedModel = 'claude-sonnet-4-20250514'
-        if (originalModel !== mappedModel) {
-          logger.info(`🔄 将请求模型从 ${originalModel} 映射为 ${mappedModel}`)
-        }
+      const mappedModel = this._mapFactoryAnthropicModel(originalModel)
+      if (mappedModel !== originalModel) {
+        logger.info(`🔄 将请求模型从 ${originalModel} 映射为 ${mappedModel}`)
         normalizedBody.model = mappedModel
       }
     }
@@ -198,8 +273,21 @@ class DroidRelayService {
     } = options
     const keyInfo = apiKeyData || {}
     const clientApiKeyId = keyInfo.id || null
-    const normalizedEndpoint = this._normalizeEndpointType(endpointType)
-    const normalizedRequestBody = this._normalizeRequestBody(requestBody, normalizedEndpoint)
+    let normalizedEndpoint = this._normalizeEndpointType(endpointType)
+    let normalizedRequestBody = this._normalizeRequestBody(requestBody, normalizedEndpoint)
+    let outboundFormat = null
+    if (
+      droidClaudeOpenAICompat.isClaudeModel(normalizedRequestBody?.model) &&
+      (normalizedEndpoint === 'comm' || normalizedEndpoint === 'openai')
+    ) {
+      outboundFormat = normalizedEndpoint === 'comm' ? 'chat_completions' : 'responses'
+      normalizedRequestBody =
+        outboundFormat === 'chat_completions'
+          ? droidClaudeOpenAICompat.toAnthropicFromChatCompletions(normalizedRequestBody)
+          : droidClaudeOpenAICompat.toAnthropicFromResponses(normalizedRequestBody)
+      normalizedEndpoint = 'anthropic'
+      logger.info(`🔄 Claude 经 ${endpointType} 入口改走 Anthropic Messages`)
+    }
     let account = null
     let selectedApiKey = null
     let accessToken = null
@@ -314,7 +402,9 @@ class DroidRelayService {
           skipUsageRecord,
           selectedApiKey,
           sessionHash,
-          clientApiKeyId
+          clientApiKeyId,
+          0,
+          outboundFormat
         )
       } else {
         // 非流式响应：使用 axios
@@ -332,7 +422,21 @@ class DroidRelayService {
           })
         }
 
-        const response = await axios(requestOptions)
+        let response
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            response = await axios(requestOptions)
+            break
+          } catch (requestError) {
+            const retryStatus = requestError?.response?.status
+            if (this._isRetryableFactoryGatewayStatus(retryStatus) && attempt === 0) {
+              logger.warn(`⚠️ Factory.ai ${retryStatus}，1s 后重试一次`)
+              await new Promise((resolveRetry) => setTimeout(resolveRetry, 1000))
+              continue
+            }
+            throw requestError
+          }
+        }
 
         logger.info(`✅ Factory.ai response status: ${response.status}`)
 
@@ -344,7 +448,8 @@ class DroidRelayService {
           normalizedRequestBody,
           clientRequest,
           normalizedEndpoint,
-          skipUsageRecord
+          skipUsageRecord,
+          outboundFormat
         )
       }
     } catch (error) {
@@ -358,8 +463,13 @@ class DroidRelayService {
       const status = error?.response?.status
       const droidAutoProtectionDisabled =
         account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
-      // 5xx 错误
-      if (status >= 500 && account?.id && !droidAutoProtectionDisabled) {
+      // Factory 504/502 是上游网关超时，不把账号打成 5 分钟不可用
+      if (
+        status >= 500 &&
+        account?.id &&
+        !droidAutoProtectionDisabled &&
+        !this._isRetryableFactoryGatewayStatus(status)
+      ) {
         await upstreamErrorHelper.markTempUnavailable(account.id, 'droid', status).catch(() => {})
       } else if (
         !status &&
@@ -390,12 +500,7 @@ class DroidRelayService {
         return {
           statusCode: error.response.status,
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(
-            error.response.data || {
-              error: 'upstream_error',
-              message: error.message
-            }
-          )
+          body: JSON.stringify(this._formatClientError(error.response.status, error.response.data))
         }
       }
 
@@ -426,7 +531,9 @@ class DroidRelayService {
     skipUsageRecord = false,
     selectedAccountApiKey = null,
     sessionHash = null,
-    clientApiKeyId = null
+    clientApiKeyId = null,
+    retryCount = 0,
+    outboundFormat = null
   ) {
     return new Promise((resolve, reject) => {
       const url = new URL(apiUrl)
@@ -543,7 +650,33 @@ class DroidRelayService {
             logger.info('✅ res.end() reached')
             const body = Buffer.concat(chunks).toString()
             logger.error(`❌ Factory.ai error response body: ${body || '(empty)'}`)
-            if (res.statusCode >= 500) {
+            if (this._isRetryableFactoryGatewayStatus(res.statusCode) && retryCount < 1) {
+              logger.warn(`⚠️ Factory.ai ${res.statusCode}，1s 后重试一次`)
+              setTimeout(() => {
+                this._handleStreamRequest(
+                  apiUrl,
+                  headers,
+                  processedBody,
+                  proxyAgent,
+                  clientRequest,
+                  clientResponse,
+                  account,
+                  apiKeyData,
+                  requestBody,
+                  endpointType,
+                  skipUsageRecord,
+                  selectedAccountApiKey,
+                  sessionHash,
+                  clientApiKeyId,
+                  retryCount + 1,
+                  outboundFormat
+                )
+                  .then(resolveOnce)
+                  .catch(rejectOnce)
+              }, 1000)
+              return
+            }
+            if (res.statusCode >= 500 && !this._isRetryableFactoryGatewayStatus(res.statusCode)) {
               const streamAutoProtectionDisabled =
                 account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
               if (!streamAutoProtectionDisabled) {
@@ -564,10 +697,9 @@ class DroidRelayService {
               })
             }
             if (!clientResponse.headersSent) {
-              clientResponse.status(res.statusCode).json({
-                error: 'upstream_error',
-                details: body
-              })
+              clientResponse
+                .status(res.statusCode)
+                .json(this._formatClientError(res.statusCode, body))
             }
             resolveOnce({ statusCode: res.statusCode, streaming: true })
           })
@@ -590,26 +722,46 @@ class DroidRelayService {
 
         // Usage 数据收集
         let buffer = ''
+        let sseCarry = ''
         const currentUsageData = {}
         const model = requestBody.model || 'unknown'
+        const claudeCacheMode = this._resolveClaudeCacheMode(apiKeyData, model, requestBody)
+        const sseTranslator = outboundFormat
+          ? droidClaudeOpenAICompat.createSseTranslator(outboundFormat, model)
+          : null
 
         // 处理 SSE 流
         res.on('data', (chunk) => {
           const chunkStr = chunk.toString()
-          completionWindow = (completionWindow + chunkStr).slice(-1024)
+          const rewrittenChunk = fixedClaudeCacheRatio.rewriteSseChunk(
+            chunkStr,
+            model,
+            endpointType,
+            sseCarry,
+            claudeCacheMode
+          )
+          sseCarry = rewrittenChunk.carry
+          const anthropicOutbound = rewrittenChunk.output
+          let outbound = anthropicOutbound
+          if (sseTranslator && outbound) {
+            outbound = outbound
+              .split('\n')
+              .map((line) => sseTranslator.translateLine(line))
+              .join('')
+          }
+          completionWindow = (completionWindow + outbound).slice(-1024)
           hasForwardedData = true
 
-          // 转发数据到客户端
-          clientResponse.write(chunk)
+          if (outbound) {
+            clientResponse.write(outbound)
+          }
           hasForwardedData = true
 
           // 解析 usage 数据（根据端点类型）
           if (endpointType === 'anthropic') {
-            // Anthropic Messages API 格式
-            this._parseAnthropicUsageFromSSE(chunkStr, buffer, currentUsageData)
+            this._parseAnthropicUsageFromSSE(anthropicOutbound, buffer, currentUsageData)
           } else if (endpointType === 'openai' || endpointType === 'comm') {
-            // OpenAI Chat Completions 格式（openai 和 comm 共用）
-            this._parseOpenAIUsageFromSSE(chunkStr, buffer, currentUsageData)
+            this._parseOpenAIUsageFromSSE(outbound, buffer, currentUsageData)
           }
 
           if (!responseCompleted && this._detectStreamCompletion(completionWindow, endpointType)) {
@@ -621,6 +773,23 @@ class DroidRelayService {
 
         res.on('end', async () => {
           responseCompleted = true
+          if (sseCarry) {
+            const flushed = fixedClaudeCacheRatio.rewriteSseLine(
+              sseCarry,
+              model,
+              endpointType,
+              claudeCacheMode
+            )
+            const flushedOut = sseTranslator ? sseTranslator.translateLine(flushed) : flushed
+            if (flushedOut) {
+              clientResponse.write(flushedOut)
+            }
+            if (endpointType === 'anthropic') {
+              this._parseAnthropicUsageFromSSE(flushed, buffer, currentUsageData)
+            } else if (endpointType === 'openai' || endpointType === 'comm') {
+              this._parseOpenAIUsageFromSSE(flushedOut, buffer, currentUsageData)
+            }
+          }
           clientResponse.end()
 
           // 记录 usage 数据
@@ -634,7 +803,8 @@ class DroidRelayService {
                 requestBody,
                 stream: true,
                 statusCode: clientResponse.statusCode
-              })
+              }),
+              claudeCacheMode
             )
 
             const usageSummary = {
@@ -884,8 +1054,24 @@ class DroidRelayService {
   /**
    * 记录从流中解析的 usage 数据
    */
-  async _recordUsageFromStreamData(usageData, apiKeyData, account, model, requestMeta = null) {
-    const normalizedUsage = this._normalizeUsageSnapshot(usageData)
+  _resolveClaudeCacheMode(apiKeyData, model, requestBody) {
+    const cacheKey = fixedClaudeCacheRatio.buildCacheKey({
+      apiKeyId: apiKeyData?.id,
+      model,
+      requestBody
+    })
+    return fixedClaudeCacheRatio.consumeCacheState(cacheKey)
+  }
+
+  async _recordUsageFromStreamData(
+    usageData,
+    apiKeyData,
+    account,
+    model,
+    requestMeta = null,
+    cacheMode = 'cold'
+  ) {
+    const normalizedUsage = this._normalizeUsageSnapshot(usageData, model, cacheMode)
     const costs = await this._recordUsage(apiKeyData, account, model, normalizedUsage, requestMeta)
     return { normalizedUsage, costs }
   }
@@ -893,7 +1079,7 @@ class DroidRelayService {
   /**
    * 标准化 usage 数据，确保字段完整且为数字
    */
-  _normalizeUsageSnapshot(usageData = {}) {
+  _normalizeUsageSnapshot(usageData = {}, model = '', cacheMode = 'cold') {
     const toNumber = (value) => {
       if (value === undefined || value === null || value === '') {
         return 0
@@ -959,6 +1145,10 @@ class DroidRelayService {
       }
     }
 
+    if (model) {
+      fixedClaudeCacheRatio.applyToAnthropicUsage(model, normalized, cacheMode)
+    }
+
     return normalized
   }
 
@@ -1017,7 +1207,7 @@ class DroidRelayService {
 
     // OpenAI GPT 模型
     if (lowerModel.startsWith('gpt-') || lowerModel.includes('gpt')) {
-      return 'azure_openai'
+      return 'openai'
     }
 
     // GLM 模型使用 fireworks
@@ -1055,21 +1245,19 @@ class DroidRelayService {
       }
     }
 
-    // OpenAI 特定头 - 根据模型动态选择 provider
+    // OpenAI Responses：Claude 已改走 anthropic 端点；GPT 用 openai（azure_openai 会 400 region）
     if (endpointType === 'openai') {
-      const model = (requestBody?.model || '').toLowerCase()
-      // -max 模型使用 openai provider，其他使用 azure_openai
-      if (model.includes('-max')) {
-        headers['x-api-provider'] = 'openai'
-      } else {
-        headers['x-api-provider'] = 'azure_openai'
-      }
+      headers['x-api-provider'] = 'openai'
     }
 
-    // Comm 端点根据模型动态设置 provider
+    // Comm Chat Completions：Claude 已改走 anthropic；其余按模型推断，GPT 用 openai
     if (endpointType === 'comm') {
-      const model = requestBody?.model
-      headers['x-api-provider'] = this._inferProviderFromModel(model)
+      const model = requestBody?.model || ''
+      if (String(model).toLowerCase().startsWith('gpt-')) {
+        headers['x-api-provider'] = 'openai'
+      } else {
+        headers['x-api-provider'] = this._inferProviderFromModel(model)
+      }
     }
 
     // 生成会话 ID（如果客户端没有提供）
@@ -1122,11 +1310,45 @@ class DroidRelayService {
       }
 
       if (typeof thinking.type === 'string') {
-        return thinking.type.trim().toLowerCase() === 'enabled'
+        const type = thinking.type.trim().toLowerCase()
+        return type === 'enabled' || type === 'adaptive' || type === 'auto'
       }
     }
 
     return false
+  }
+
+  /**
+   * Factory 会拒绝官方 Claude Code 身份 system prompt（403 Forbidden）。
+   */
+  _isClaudeCodeIdentityText(text) {
+    if (typeof text !== 'string') {
+      return false
+    }
+
+    const trimmed = text.trim()
+    if (!trimmed) {
+      return false
+    }
+
+    return trimmed.startsWith("You are Claude Code, Anthropic's official CLI for Claude.")
+  }
+
+  _stripClaudeCodeIdentityFromSystem(system) {
+    if (typeof system === 'string') {
+      return this._isClaudeCodeIdentityText(system) ? '' : system
+    }
+
+    if (!Array.isArray(system)) {
+      return system
+    }
+
+    return system.filter((item) => {
+      if (!item || item.type !== 'text') {
+        return true
+      }
+      return !this._isClaudeCodeIdentityText(item.text)
+    })
   }
 
   /**
@@ -1153,8 +1375,21 @@ class DroidRelayService {
       processedBody.stream = true
     }
 
-    // Anthropic 端点：仅注入系统提示
+    // Anthropic 端点：去掉 Claude Code 身份提示（Factory 会 403），再注入 Droid 系统提示
     if (endpointType === 'anthropic') {
+      if (Object.prototype.hasOwnProperty.call(processedBody, 'system')) {
+        const stripped = this._stripClaudeCodeIdentityFromSystem(processedBody.system)
+        if (
+          stripped === '' ||
+          (Array.isArray(stripped) && stripped.length === 0) ||
+          stripped === undefined
+        ) {
+          delete processedBody.system
+        } else {
+          processedBody.system = stripped
+        }
+      }
+
       if (this.systemPrompt) {
         const promptBlock = { type: 'text', text: this.systemPrompt }
         if (Array.isArray(processedBody.system)) {
@@ -1213,14 +1448,31 @@ class DroidRelayService {
       }
     }
 
-    // 处理 temperature 和 top_p 参数
-    const hasValidTemperature =
-      processedBody.temperature !== undefined && processedBody.temperature !== null
-    const hasValidTopP = processedBody.top_p !== undefined && processedBody.top_p !== null
+    // Claude 5.x：Factory 拒绝 temperature / top_p（`temperature is deprecated for this model`）
+    if (isClaude5xModel(processedBody.model)) {
+      if (processedBody.temperature !== undefined || processedBody.top_p !== undefined) {
+        logger.info(`🧹 去掉 Claude 5.x 不支持的采样参数: ${processedBody.model}`)
+        delete processedBody.temperature
+        delete processedBody.top_p
+      }
+      if (!processedBody.thinking) {
+        processedBody.thinking = { type: 'adaptive' }
+      }
+      if (!processedBody.output_config || !processedBody.output_config.effort) {
+        processedBody.output_config = {
+          ...(processedBody.output_config || {}),
+          effort: 'high'
+        }
+      }
+    } else {
+      const hasValidTemperature =
+        processedBody.temperature !== undefined && processedBody.temperature !== null
+      const hasValidTopP = processedBody.top_p !== undefined && processedBody.top_p !== null
 
-    if (hasValidTemperature && hasValidTopP) {
-      // 仅允许 temperature 或 top_p 其一，同时优先保留 temperature
-      delete processedBody.top_p
+      if (hasValidTemperature && hasValidTopP) {
+        // 仅允许 temperature 或 top_p 其一，同时优先保留 temperature
+        delete processedBody.top_p
+      }
     }
 
     return processedBody
@@ -1236,17 +1488,30 @@ class DroidRelayService {
     requestBody,
     clientRequest,
     endpointType,
-    skipUsageRecord = false
+    skipUsageRecord = false,
+    outboundFormat = null
   ) {
-    const { data } = response
+    let { data } = response
     const keyId = apiKeyData?.id
-
-    // 从响应中提取 usage 数据
-    const usage = data.usage || {}
-
     const model = requestBody.model || 'unknown'
+    const claudeCacheMode = this._resolveClaudeCacheMode(apiKeyData, model, requestBody)
 
-    const normalizedUsage = this._normalizeUsageSnapshot(usage)
+    if (data && data.usage) {
+      if (endpointType === 'anthropic') {
+        fixedClaudeCacheRatio.applyToAnthropicUsage(model, data.usage, claudeCacheMode)
+      } else {
+        fixedClaudeCacheRatio.applyToOpenAIUsage(model, data.usage, claudeCacheMode)
+      }
+    }
+
+    const usage = (data && data.usage) || {}
+    const normalizedUsage = this._normalizeUsageSnapshot(usage, model, claudeCacheMode)
+
+    if (outboundFormat === 'chat_completions') {
+      data = droidClaudeOpenAICompat.anthropicToChatCompletions(data, model)
+    } else if (outboundFormat === 'responses') {
+      data = droidClaudeOpenAICompat.anthropicToResponses(data, model)
+    }
 
     if (!skipUsageRecord) {
       const droidCosts = await this._recordUsage(
@@ -1446,7 +1711,8 @@ class DroidRelayService {
 
     const clientErrorAutoProtectionDisabled =
       account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
-    if (!clientErrorAutoProtectionDisabled) {
+    // Factory 400/403 常见于模型名或请求体被拒，不是 token 失效；不要把唯一账号冷却 30 分钟。
+    if (!clientErrorAutoProtectionDisabled && statusCode !== 400 && statusCode !== 403) {
       await upstreamErrorHelper.markTempUnavailable(accountId, 'droid', statusCode)
     }
     await this._clearAccountStickyMapping(normalizedEndpoint, sessionHash, clientApiKeyId)

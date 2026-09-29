@@ -15,6 +15,27 @@ const CLAUDE_MODELS = [
   { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' }
 ]
 
+// Factory.ai Droid 出站目录（Claude Code / sub2api 客户端 ID）。
+// Fable 5.1 在 Factory 侧是 claude-fable-5.1，转发时由 droidRelayService 映射。
+const DROID_FACTORY_MODELS = [
+  { value: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
+  { value: 'claude-fable-5', label: 'Claude Fable 5' },
+  { value: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
+  { value: 'claude-opus-5-5-fast', label: 'Claude Opus 5.5 Fast' },
+  { value: 'claude-opus-5', label: 'Claude Opus 5' },
+  { value: 'claude-opus-5-fast', label: 'Claude Opus 5 Fast' },
+  { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
+  { value: 'claude-opus-4-8-fast', label: 'Claude Opus 4.8 Fast' },
+  { value: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
+  { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+  { value: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5' },
+  { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
+  { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+  { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' }
+]
+
 const GEMINI_MODELS = [
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
   { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
@@ -71,13 +92,14 @@ const PLATFORM_TEST_MODELS = {
   'gemini-api': GEMINI_MODELS,
   'openai-responses': OPENAI_MODELS,
   'azure-openai': [],
-  droid: CLAUDE_MODELS,
+  droid: DROID_FACTORY_MODELS,
   grok: GROK_MODELS,
   ccr: CLAUDE_MODELS
 }
 
 module.exports = {
   CLAUDE_MODELS,
+  DROID_FACTORY_MODELS,
   GEMINI_MODELS,
   OPENAI_MODELS,
   GROK_MODELS,
