@@ -3,8 +3,6 @@ const redis = require('../models/redis')
 const logger = require('../utils/logger')
 const apiKeyService = require('../services/apiKeyService')
 const CostCalculator = require('../utils/costCalculator')
-const claudeAccountService = require('../services/account/claudeAccountService')
-const openaiAccountService = require('../services/account/openaiAccountService')
 const serviceRatesService = require('../services/serviceRatesService')
 const {
   createClaudeTestPayload,
@@ -432,41 +430,7 @@ router.post('/api/user-stats', async (req, res) => {
 
     const accountDetailTasks = []
 
-    if (fullKeyData.claudeAccountId) {
-      accountDetailTasks.push(
-        (async () => {
-          try {
-            const overview = await claudeAccountService.getAccountOverview(
-              fullKeyData.claudeAccountId
-            )
 
-            if (overview && overview.accountType === 'dedicated') {
-              boundAccountDetails.claude = overview
-            }
-          } catch (error) {
-            logger.warn(`⚠️ Failed to load Claude account overview for key ${keyId}:`, error)
-          }
-        })()
-      )
-    }
-
-    if (fullKeyData.openaiAccountId) {
-      accountDetailTasks.push(
-        (async () => {
-          try {
-            const overview = await openaiAccountService.getAccountOverview(
-              fullKeyData.openaiAccountId
-            )
-
-            if (overview && overview.accountType === 'dedicated') {
-              boundAccountDetails.openai = overview
-            }
-          } catch (error) {
-            logger.warn(`⚠️ Failed to load OpenAI account overview for key ${keyId}:`, error)
-          }
-        })()
-      )
-    }
 
     if (accountDetailTasks.length > 0) {
       await Promise.allSettled(accountDetailTasks)

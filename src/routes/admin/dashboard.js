@@ -1,13 +1,6 @@
 const express = require('express')
 const apiKeyService = require('../../services/apiKeyService')
-const claudeAccountService = require('../../services/account/claudeAccountService')
-const claudeConsoleAccountService = require('../../services/account/claudeConsoleAccountService')
-const bedrockAccountService = require('../../services/account/bedrockAccountService')
-const ccrAccountService = require('../../services/account/ccrAccountService')
-const geminiAccountService = require('../../services/account/geminiAccountService')
 const droidAccountService = require('../../services/account/droidAccountService')
-const grokAccountService = require('../../services/account/grokAccountService')
-const openaiResponsesAccountService = require('../../services/account/openaiResponsesAccountService')
 const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
@@ -29,29 +22,16 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
     let apiKeys = null
     let apiKeyCount = null
 
-    const [
-      claudeAccounts,
-      claudeConsoleAccounts,
-      geminiAccounts,
-      bedrockAccountsResult,
-      openaiAccounts,
-      ccrAccounts,
-      openaiResponsesAccounts,
-      droidAccounts,
-      grokAccounts,
-      todayStats,
-      systemAverages,
-      realtimeMetrics
-    ] = await Promise.all([
-      claudeAccountService.getAllAccounts(),
-      claudeConsoleAccountService.getAllAccounts(),
-      geminiAccountService.getAllAccounts(),
-      bedrockAccountService.getAllAccounts(),
-      redis.getAllOpenAIAccounts(),
-      ccrAccountService.getAllAccounts(),
-      openaiResponsesAccountService.getAllAccounts(true),
+    const claudeAccounts = []
+    const claudeConsoleAccounts = []
+    const geminiAccounts = []
+    const bedrockAccountsResult = { success: true, data: [] }
+    const openaiAccounts = []
+    const ccrAccounts = []
+    const openaiResponsesAccounts = []
+    const grokAccounts = []
+    const [droidAccounts, todayStats, systemAverages, realtimeMetrics] = await Promise.all([
       droidAccountService.getAllAccounts(),
-      grokAccountService.getAllAccounts(true),
       redis.getTodayStats(),
       redis.getSystemAverages(),
       redis.getRealtimeSystemMetrics()
@@ -203,7 +183,8 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
           openaiAccounts.length +
           openaiResponsesAccounts.length +
           ccrAccounts.length +
-          grokAccounts.length,
+          grokAccounts.length +
+          droidAccounts.length,
         normalAccounts:
           claudeStats.normal +
           claudeConsoleStats.normal +
@@ -589,10 +570,8 @@ router.get('/model-stats', authenticateAdmin, async (req, res) => {
 // 清理过期数据
 router.post('/cleanup', authenticateAdmin, async (req, res) => {
   try {
-    const [expiredKeys, errorAccounts] = await Promise.all([
-      apiKeyService.cleanupExpiredKeys(),
-      claudeAccountService.cleanupErrorAccounts()
-    ])
+    const [expiredKeys] = await Promise.all([apiKeyService.cleanupExpiredKeys()])
+    const errorAccounts = 0
 
     await redis.cleanup()
 

@@ -13,22 +13,11 @@ const pricingService = require('./services/pricingService')
 const cacheMonitor = require('./utils/cacheMonitor')
 const { getSafeMessage } = require('./utils/errorSanitizer')
 
-// Import routes
-const apiRoutes = require('./routes/api')
-const unifiedRoutes = require('./routes/unified')
+// Import routes (Droid-only sidecar)
 const adminRoutes = require('./routes/admin')
 const webRoutes = require('./routes/web')
 const apiStatsRoutes = require('./routes/apiStats')
-const geminiRoutes = require('./routes/geminiRoutes')
-const openaiGeminiRoutes = require('./routes/openaiGeminiRoutes')
-const standardGeminiRoutes = require('./routes/standardGeminiRoutes')
-const openaiClaudeRoutes = require('./routes/openaiClaudeRoutes')
-const openaiRoutes = require('./routes/openaiRoutes')
 const droidRoutes = require('./routes/droidRoutes')
-const grokRoutes = require('./routes/grokRoutes')
-const userRoutes = require('./routes/userRoutes')
-const azureOpenaiRoutes = require('./routes/azureOpenaiRoutes')
-const webhookRoutes = require('./routes/webhook')
 
 // Import middleware
 const {
@@ -126,20 +115,6 @@ class Application {
           `💰 Cost initialization completed: ${result.processed} processed, ${result.errors} errors`
         )
       }
-
-      // 💰 启动回填：本周 Claude 周费用（用于 API Key 维度周限额）
-      try {
-        logger.info('💰 Backfilling current-week Claude weekly cost...')
-        const weeklyClaudeCostInitService = require('./services/weeklyClaudeCostInitService')
-        await weeklyClaudeCostInitService.backfillCurrentWeekClaudeCosts()
-      } catch (error) {
-        logger.warn('⚠️ Weekly Claude cost backfill failed (startup continues):', error.message)
-      }
-
-      // 🕐 初始化Claude账户会话窗口
-      logger.info('🕐 Initializing Claude account session windows...')
-      const claudeAccountService = require('./services/account/claudeAccountService')
-      await claudeAccountService.initializeSessionWindows()
 
       // 📊 初始化费用排序索引服务
       logger.info('📊 Initializing cost rank service...')
@@ -328,46 +303,11 @@ class Application {
         logger.warn('⚠️ Admin SPA dist directory not found, skipping /admin-next route')
       }
 
-      // 🛣️ 路由
-      this.app.use('/api', apiRoutes)
-      this.app.use('/api', unifiedRoutes) // 统一智能路由（支持 /v1/chat/completions 等）
-      this.app.use('/claude', apiRoutes) // /claude 路由别名，与 /api 功能相同
-      // Anthropic (Claude Code) 路由：按路径强制分流到 Gemini OAuth 账户
-      // - /antigravity/api/v1/messages -> Antigravity OAuth
-      // - /gemini-cli/api/v1/messages -> Gemini CLI OAuth
-      this.app.use(
-        '/antigravity/api',
-        (req, res, next) => {
-          req._anthropicVendor = 'antigravity'
-          next()
-        },
-        apiRoutes
-      )
-      this.app.use(
-        '/gemini-cli/api',
-        (req, res, next) => {
-          req._anthropicVendor = 'gemini-cli'
-          next()
-        },
-        apiRoutes
-      )
+      // 🛣️ 路由（仅 Droid sidecar）
       this.app.use('/admin', adminRoutes)
-      this.app.use('/users', userRoutes)
-      // 使用 web 路由（包含 auth 和页面重定向）
       this.app.use('/web', webRoutes)
       this.app.use('/apiStats', apiStatsRoutes)
-      // Gemini 路由：同时支持标准格式和原有格式
-      this.app.use('/gemini', standardGeminiRoutes) // 标准 Gemini API 格式路由
-      this.app.use('/gemini', geminiRoutes) // 保留原有路径以保持向后兼容
-      this.app.use('/openai/gemini', openaiGeminiRoutes)
-      this.app.use('/openai/claude', openaiClaudeRoutes)
-      this.app.use('/openai', unifiedRoutes) // 复用统一智能路由，支持 /openai/v1/chat/completions
-      this.app.use('/openai', openaiRoutes) // Codex API 路由（/openai/responses, /openai/v1/responses）
-      // Droid 路由：支持多种 Factory.ai 端点
-      this.app.use('/droid', droidRoutes) // Droid (Factory.ai) API 转发
-      this.app.use('/grok', grokRoutes) // Grok / xAI API 转发
-      this.app.use('/azure', azureOpenaiRoutes)
-      this.app.use('/admin/webhook', webhookRoutes)
+      this.app.use('/droid', droidRoutes)
 
       // 🏠 根路径重定向到新版管理界面
       this.app.get('/', (req, res) => {
@@ -641,12 +581,7 @@ class Application {
 
       // 注册各个服务的缓存实例
       const services = [
-        { name: 'claudeAccount', service: require('./services/account/claudeAccountService') },
-        {
-          name: 'claudeConsole',
-          service: require('./services/account/claudeConsoleAccountService')
-        },
-        { name: 'bedrockAccount', service: require('./services/account/bedrockAccountService') }
+        { name: 'droidAccount', service: require('./services/account/droidAccountService') }
       ]
 
       // 注册已加载的服务缓存
@@ -678,19 +613,12 @@ class Application {
         logger.info('🧹 Starting scheduled cleanup...')
 
         const apiKeyService = require('./services/apiKeyService')
-        const claudeAccountService = require('./services/account/claudeAccountService')
 
-        const [expiredKeys, errorAccounts] = await Promise.all([
-          apiKeyService.cleanupExpiredKeys(),
-          claudeAccountService.cleanupErrorAccounts(),
-          claudeAccountService.cleanupTempErrorAccounts() // 新增：清理临时错误账户
-        ])
+        const [expiredKeys] = await Promise.all([apiKeyService.cleanupExpiredKeys()])
 
         await redis.cleanup()
 
-        logger.success(
-          `🧹 Cleanup completed: ${expiredKeys} expired keys, ${errorAccounts} error accounts reset`
-        )
+        logger.success(`🧹 Cleanup completed: ${expiredKeys} expired keys`)
       } catch (error) {
         logger.error('❌ Cleanup task failed:', error)
       }

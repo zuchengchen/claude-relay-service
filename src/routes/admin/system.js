@@ -2,8 +2,6 @@ const express = require('express')
 const fs = require('fs')
 const path = require('path')
 const axios = require('axios')
-const claudeCodeHeadersService = require('../../services/claudeCodeHeadersService')
-const claudeAccountService = require('../../services/account/claudeAccountService')
 const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
@@ -15,47 +13,16 @@ const router = express.Router()
 
 // 获取所有 Claude Code headers
 router.get('/claude-code-headers', authenticateAdmin, async (req, res) => {
-  try {
-    const allHeaders = await claudeCodeHeadersService.getAllAccountHeaders()
-
-    // 获取所有 Claude 账号信息
-    const accounts = await claudeAccountService.getAllAccounts()
-    const accountMap = {}
-    accounts.forEach((account) => {
-      accountMap[account.id] = account.name
-    })
-
-    // 格式化输出
-    const formattedData = Object.entries(allHeaders).map(([accountId, data]) => ({
-      accountId,
-      accountName: accountMap[accountId] || 'Unknown',
-      version: data.version,
-      userAgent: data.headers['user-agent'],
-      updatedAt: data.updatedAt,
-      headers: data.headers
-    }))
-
-    return res.json({
-      success: true,
-      data: formattedData
-    })
-  } catch (error) {
-    logger.error('❌ Failed to get Claude Code headers:', error)
-    return res
-      .status(500)
-      .json({ error: 'Failed to get Claude Code headers', message: error.message })
-  }
+  return res.json({ success: true, data: [] })
 })
 
 // 🗑️ 清除指定账号的 Claude Code headers
 router.delete('/claude-code-headers/:accountId', authenticateAdmin, async (req, res) => {
   try {
     const { accountId } = req.params
-    await claudeCodeHeadersService.clearAccountHeaders(accountId)
-
     return res.json({
       success: true,
-      message: `Claude Code headers cleared for account ${accountId}`
+      message: `Claude Code headers not used in Droid sidecar (${accountId})`
     })
   } catch (error) {
     logger.error('❌ Failed to clear Claude Code headers:', error)

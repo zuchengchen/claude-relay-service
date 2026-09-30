@@ -1,11 +1,6 @@
 const express = require('express')
 const accountGroupService = require('../../services/accountGroupService')
-const claudeAccountService = require('../../services/account/claudeAccountService')
-const claudeConsoleAccountService = require('../../services/account/claudeConsoleAccountService')
-const geminiAccountService = require('../../services/account/geminiAccountService')
-const openaiAccountService = require('../../services/account/openaiAccountService')
 const droidAccountService = require('../../services/account/droidAccountService')
-const grokAccountService = require('../../services/account/grokAccountService')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 
@@ -103,47 +98,7 @@ router.get('/:groupId/members', authenticateAdmin, async (req, res) => {
     for (const memberId of memberIds) {
       // 根据分组平台优先查找对应账户
       let account = null
-      switch (group.platform) {
-        case 'droid':
-          account = await droidAccountService.getAccount(memberId)
-          break
-        case 'grok':
-          account = await grokAccountService.getAccount(memberId, { includeSecrets: false })
-          break
-        case 'gemini':
-          account = await geminiAccountService.getAccount(memberId)
-          break
-        case 'openai':
-          account = await openaiAccountService.getAccount(memberId)
-          break
-        case 'claude':
-        default:
-          account = await claudeAccountService.getAccount(memberId)
-          if (!account) {
-            account = await claudeConsoleAccountService.getAccount(memberId)
-          }
-          break
-      }
-
-      // 兼容旧数据：若按平台未找到，则继续尝试其他平台
-      if (!account) {
-        account = await claudeAccountService.getAccount(memberId)
-      }
-      if (!account) {
-        account = await claudeConsoleAccountService.getAccount(memberId)
-      }
-      if (!account) {
-        account = await geminiAccountService.getAccount(memberId)
-      }
-      if (!account) {
-        account = await openaiAccountService.getAccount(memberId)
-      }
-      if (!account && group.platform !== 'droid') {
-        account = await droidAccountService.getAccount(memberId)
-      }
-      if (!account && group.platform !== 'grok') {
-        account = await grokAccountService.getAccount(memberId, { includeSecrets: false })
-      }
+      account = await droidAccountService.getAccount(memberId)
 
       if (account) {
         members.push(account)

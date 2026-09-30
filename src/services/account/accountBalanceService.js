@@ -210,17 +210,7 @@ class AccountBalanceService {
     }
 
     const serviceMap = {
-      claude: require('./claudeAccountService'),
-      'claude-console': require('./claudeConsoleAccountService'),
-      gemini: require('./geminiAccountService'),
-      'gemini-api': require('./geminiApiAccountService'),
-      openai: require('./openaiAccountService'),
-      'openai-responses': require('./openaiResponsesAccountService'),
-      azure_openai: require('./azureOpenaiAccountService'),
-      bedrock: require('./bedrockAccountService'),
-      droid: require('./droidAccountService'),
-      grok: require('./grokAccountService'),
-      ccr: require('./ccrAccountService')
+      droid: require('./droidAccountService')
     }
 
     const service = serviceMap[platform]
@@ -245,17 +235,7 @@ class AccountBalanceService {
     }
 
     const serviceMap = {
-      claude: require('./claudeAccountService'),
-      'claude-console': require('./claudeConsoleAccountService'),
-      gemini: require('./geminiAccountService'),
-      'gemini-api': require('./geminiApiAccountService'),
-      openai: require('./openaiAccountService'),
-      'openai-responses': require('./openaiResponsesAccountService'),
-      azure_openai: require('./azureOpenaiAccountService'),
-      bedrock: require('./bedrockAccountService'),
-      droid: require('./droidAccountService'),
-      grok: require('./grokAccountService'),
-      ccr: require('./ccrAccountService')
+      droid: require('./droidAccountService')
     }
 
     const service = serviceMap[platform]

@@ -1,16 +1,7 @@
 const redis = require('../models/redis')
 const logger = require('../utils/logger')
 const claudeRelayConfigService = require('./claudeRelayConfigService')
-const claudeAccountService = require('./account/claudeAccountService')
-const claudeConsoleAccountService = require('./account/claudeConsoleAccountService')
-const ccrAccountService = require('./account/ccrAccountService')
-const geminiAccountService = require('./account/geminiAccountService')
-const geminiApiAccountService = require('./account/geminiApiAccountService')
-const openaiAccountService = require('./account/openaiAccountService')
-const openaiResponsesAccountService = require('./account/openaiResponsesAccountService')
-const azureOpenaiAccountService = require('./account/azureOpenaiAccountService')
 const droidAccountService = require('./account/droidAccountService')
-const bedrockAccountService = require('./account/bedrockAccountService')
 const CostCalculator = require('../utils/costCalculator')
 const {
   sanitizeRequestBodySnapshot,
@@ -47,16 +38,7 @@ const accountTypeNames = {
 }
 
 const accountServices = {
-  claude: claudeAccountService,
-  'claude-console': claudeConsoleAccountService,
-  ccr: ccrAccountService,
-  openai: openaiAccountService,
-  'openai-responses': openaiResponsesAccountService,
-  'azure-openai': azureOpenaiAccountService,
-  gemini: geminiAccountService,
-  'gemini-api': geminiApiAccountService,
-  droid: droidAccountService,
-  bedrock: bedrockAccountService
+  droid: droidAccountService
 }
 
 function clampRetentionHours(value) {

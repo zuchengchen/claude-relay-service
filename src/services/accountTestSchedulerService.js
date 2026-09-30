@@ -209,14 +209,12 @@ class AccountTestSchedulerService {
 
       // 根据平台调用对应的测试方法
       switch (platform) {
-        case 'claude':
-          testResult = await this._testClaudeAccount(accountId, model)
-          break
-        case 'gemini':
-          testResult = await this._testGeminiAccount(accountId, model)
-          break
-        case 'openai':
-          testResult = await this._testOpenAIAccount(accountId, model)
+        case 'droid':
+          testResult = {
+            success: false,
+            error: 'Use Droid account test in admin UI',
+            timestamp: new Date().toISOString()
+          }
           break
         default:
           testResult = {
@@ -268,9 +266,12 @@ class AccountTestSchedulerService {
    * @param {string} model - 测试使用的模型
    * @private
    */
-  async _testClaudeAccount(accountId, model) {
-    const claudeRelayService = require('./relay/claudeRelayService')
-    return await claudeRelayService.testAccountConnectionSync(accountId, model)
+  async _testClaudeAccount(_accountId, _model) {
+    return {
+      success: false,
+      error: 'Claude scheduled test removed in Droid sidecar',
+      timestamp: new Date().toISOString()
+    }
   }
 
   /**

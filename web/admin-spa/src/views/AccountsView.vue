@@ -7,7 +7,7 @@
             账户管理
           </h3>
           <p class="text-sm text-gray-600 dark:text-gray-400 sm:text-base">
-            管理 Claude、Gemini、OpenAI 等账户与代理配置
+            管理 Factory.ai / Droid 账户与代理配置
           </p>
         </div>
         <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2623,7 +2623,7 @@ const apiKeys = ref([]) // 保留用于其他功能（如删除账户时显示�
 const bindingCounts = ref({}) // 轻量级绑定计数，用于显示"绑定: X 个API Key"
 const accountGroups = ref([])
 const groupFilter = ref('all')
-const platformFilter = ref('all')
+const platformFilter = ref('droid')
 const statusFilter = ref('all') // 状态过滤 (normal/rateLimited/other/all)
 const searchKeyword = ref('')
 const PAGE_SIZE_STORAGE_KEY = 'accountsPageSize'
@@ -2761,71 +2761,21 @@ const sortOptions = ref([
 // 平台层级结构定义
 const platformHierarchy = [
   {
-    value: 'group-claude',
-    label: 'Claude（全部）',
-    icon: 'fa-brain',
-    children: [
-      { value: 'claude', label: 'Claude 官方/OAuth', icon: 'fa-brain' },
-      { value: 'claude-console', label: 'Claude Console', icon: 'fa-terminal' },
-      { value: 'bedrock', label: 'Bedrock', icon: 'fab fa-aws' },
-      { value: 'ccr', label: 'CCR Relay', icon: 'fa-code-branch' }
-    ]
-  },
-  {
-    value: 'group-openai',
-    label: 'Codex / OpenAI（全部）',
-    icon: 'fa-openai',
-    children: [
-      { value: 'openai', label: 'OpenAI 官方', icon: 'fa-openai' },
-      { value: 'openai-responses', label: 'OpenAI-Responses (Codex)', icon: 'fa-server' },
-      { value: 'azure_openai', label: 'Azure OpenAI', icon: 'fab fa-microsoft' }
-    ]
-  },
-  {
-    value: 'group-gemini',
-    label: 'Gemini（全部）',
-    icon: 'fab fa-google',
-    children: [
-      { value: 'gemini', label: 'Gemini OAuth', icon: 'fab fa-google' },
-      { value: 'gemini-api', label: 'Gemini API', icon: 'fa-key' }
-    ]
-  },
-  {
     value: 'group-droid',
     label: 'Droid（全部）',
     icon: 'fa-robot',
     children: [{ value: 'droid', label: 'Droid', icon: 'fa-robot' }]
-  },
-  {
-    value: 'group-grok',
-    label: 'Grok（全部）',
-    icon: 'fa-bolt',
-    children: [{ value: 'grok', label: 'Grok / xAI', icon: 'fa-bolt' }]
   }
 ]
 
 // 平台分组映射
 const platformGroupMap = {
-  'group-claude': ['claude', 'claude-console', 'bedrock', 'ccr'],
-  'group-openai': ['openai', 'openai-responses', 'azure_openai'],
-  'group-gemini': ['gemini', 'gemini-api'],
-  'group-droid': ['droid'],
-  'group-grok': ['grok']
+  'group-droid': ['droid']
 }
 
 // 平台请求处理器
 const platformRequestHandlers = {
-  claude: () => httpApis.getClaudeAccountsApi(),
-  'claude-console': () => httpApis.getClaudeConsoleAccountsApi(),
-  bedrock: () => httpApis.getBedrockAccountsApi(),
-  gemini: () => httpApis.getGeminiAccountsApi(),
-  openai: () => httpApis.getOpenAIAccountsApi(),
-  azure_openai: () => httpApis.getAzureOpenAIAccountsApi(),
-  'openai-responses': () => httpApis.getOpenAIResponsesAccountsApi(),
-  ccr: () => httpApis.getCcrAccountsApi(),
-  droid: () => httpApis.getDroidAccountsApi(),
-  grok: () => httpApis.getGrokAccountsApi(),
-  'gemini-api': () => httpApis.getGeminiApiAccountsApi()
+  droid: () => httpApis.getDroidAccountsApi()
 }
 
 const allPlatformKeys = Object.keys(platformRequestHandlers)

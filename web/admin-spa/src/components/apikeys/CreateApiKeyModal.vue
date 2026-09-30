@@ -665,54 +665,14 @@
                   v-model="form.permissions"
                   class="mr-2 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
                   type="checkbox"
-                  value="claude"
-                  @change="updatePermissions"
-                />
-                <span class="text-sm text-gray-700 dark:text-gray-300">Claude</span>
-              </label>
-              <label class="flex cursor-pointer items-center">
-                <input
-                  v-model="form.permissions"
-                  class="mr-2 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
-                  type="checkbox"
-                  value="gemini"
-                  @change="updatePermissions"
-                />
-                <span class="text-sm text-gray-700 dark:text-gray-300">Gemini</span>
-              </label>
-              <label class="flex cursor-pointer items-center">
-                <input
-                  v-model="form.permissions"
-                  class="mr-2 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
-                  type="checkbox"
-                  value="openai"
-                  @change="updatePermissions"
-                />
-                <span class="text-sm text-gray-700 dark:text-gray-300">OpenAI</span>
-              </label>
-              <label class="flex cursor-pointer items-center">
-                <input
-                  v-model="form.permissions"
-                  class="mr-2 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
-                  type="checkbox"
                   value="droid"
                   @change="updatePermissions"
                 />
                 <span class="text-sm text-gray-700 dark:text-gray-300">Droid</span>
               </label>
-              <label class="flex cursor-pointer items-center">
-                <input
-                  v-model="form.permissions"
-                  class="mr-2 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
-                  type="checkbox"
-                  value="grok"
-                  @change="updatePermissions"
-                />
-                <span class="text-sm text-gray-700 dark:text-gray-300">Grok</span>
-              </label>
             </div>
             <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              不选择任何服务表示允许访问全部服务
+              本 sidecar 仅转发 Factory.ai / Droid
             </p>
           </div>
 
@@ -1130,7 +1090,7 @@ const form = reactive({
   expirationMode: 'fixed', // 过期模式：fixed(固定) 或 activation(激活)
   activationDays: 30, // 激活后有效天数
   activationUnit: 'days', // 激活时间单位：hours 或 days
-  permissions: [], // 数组格式，空数组表示全部服务
+  permissions: ['droid'],
   claudeAccountId: '',
   geminiAccountId: '',
   openaiAccountId: '',

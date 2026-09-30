@@ -1,15 +1,6 @@
 const express = require('express')
 const apiKeyService = require('../../services/apiKeyService')
-const ccrAccountService = require('../../services/account/ccrAccountService')
-const claudeAccountService = require('../../services/account/claudeAccountService')
-const claudeConsoleAccountService = require('../../services/account/claudeConsoleAccountService')
-const geminiAccountService = require('../../services/account/geminiAccountService')
-const geminiApiAccountService = require('../../services/account/geminiApiAccountService')
-const openaiAccountService = require('../../services/account/openaiAccountService')
-const openaiResponsesAccountService = require('../../services/account/openaiResponsesAccountService')
 const droidAccountService = require('../../services/account/droidAccountService')
-const grokAccountService = require('../../services/account/grokAccountService')
-const bedrockAccountService = require('../../services/account/bedrockAccountService')
 const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
@@ -121,18 +112,7 @@ const accountTypeNames = {
 
 const resolveAccountByPlatform = async (accountId, platform) => {
   const serviceMap = {
-    claude: claudeAccountService,
-    'claude-console': claudeConsoleAccountService,
-    gemini: geminiAccountService,
-    'gemini-api': geminiApiAccountService,
-    openai: openaiAccountService,
-    'openai-responses': openaiResponsesAccountService,
-    droid: droidAccountService,
-    grok: {
-      getAccount: (id) => grokAccountService.getAccount(id, { includeSecrets: false })
-    },
-    ccr: ccrAccountService,
-    bedrock: bedrockAccountService
+    droid: droidAccountService
   }
 
   if (platform && serviceMap[platform]) {
@@ -211,7 +191,7 @@ router.get('/accounts/:accountId/usage-stats', authenticateAdmin, async (req, re
     const accountStats = await redis.getAccountUsageStats(accountId)
 
     // 获取账户基本信息
-    const accountData = await claudeAccountService.getAccount(accountId)
+    const accountData = await droidAccountService.getAccount(accountId)
     if (!accountData) {
       return res.status(404).json({
         success: false,
@@ -249,17 +229,7 @@ router.get('/accounts/:accountId/usage-history', authenticateAdmin, async (req, 
     const { accountId } = req.params
     const { platform = 'claude', days = 30 } = req.query
 
-    const allowedPlatforms = [
-      'claude',
-      'claude-console',
-      'openai',
-      'openai-responses',
-      'gemini',
-      'gemini-api',
-      'droid',
-      'grok',
-      'bedrock'
-    ]
+    const allowedPlatforms = ['droid']
     if (!allowedPlatforms.includes(platform)) {
       return res.status(400).json({
         success: false,
@@ -293,37 +263,8 @@ router.get('/accounts/:accountId/usage-history', authenticateAdmin, async (req, 
     let accountCreatedAt = null
 
     try {
-      switch (platform) {
-        case 'claude':
-          accountData = await claudeAccountService.getAccount(accountId)
-          break
-        case 'claude-console':
-          accountData = await claudeConsoleAccountService.getAccount(accountId)
-          break
-        case 'openai':
-          accountData = await openaiAccountService.getAccount(accountId)
-          break
-        case 'openai-responses':
-          accountData = await openaiResponsesAccountService.getAccount(accountId)
-          break
-        case 'gemini':
-          accountData = await geminiAccountService.getAccount(accountId)
-          break
-        case 'gemini-api': {
-          accountData = await geminiApiAccountService.getAccount(accountId)
-          break
-        }
-        case 'droid':
-          accountData = await droidAccountService.getAccount(accountId)
-          break
-        case 'grok':
-          accountData = await grokAccountService.getAccount(accountId, { includeSecrets: false })
-          break
-        case 'bedrock': {
-          const result = await bedrockAccountService.getAccount(accountId)
-          accountData = result?.success ? result.data : null
-          break
-        }
+      if (platform === 'droid') {
+        accountData = await droidAccountService.getAccount(accountId)
       }
 
       if (accountData && accountData.createdAt) {
@@ -1267,85 +1208,7 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
 
     // 拉取各平台账号列表
     let accounts = []
-    if (group === 'claude') {
-      const [claudeAccounts, claudeConsoleAccounts] = await Promise.all([
-        claudeAccountService.getAllAccounts(),
-        claudeConsoleAccountService.getAllAccounts()
-      ])
-
-      accounts = [
-        ...claudeAccounts.map((account) => {
-          const id = String(account.id || '')
-          const shortId = id ? id.slice(0, 8) : '未知'
-          return {
-            id,
-            name: account.name || account.email || `Claude账号 ${shortId}`,
-            platform: 'claude'
-          }
-        }),
-        ...claudeConsoleAccounts.map((account) => {
-          const id = String(account.id || '')
-          const shortId = id ? id.slice(0, 8) : '未知'
-          return {
-            id,
-            name: account.name || `Console账号 ${shortId}`,
-            platform: 'claude-console'
-          }
-        })
-      ]
-    } else if (group === 'openai') {
-      const [openaiAccounts, openaiResponsesAccounts] = await Promise.all([
-        openaiAccountService.getAllAccounts(),
-        openaiResponsesAccountService.getAllAccounts(true)
-      ])
-
-      accounts = [
-        ...openaiAccounts.map((account) => {
-          const id = String(account.id || '')
-          const shortId = id ? id.slice(0, 8) : '未知'
-          return {
-            id,
-            name: account.name || account.email || `OpenAI账号 ${shortId}`,
-            platform: 'openai'
-          }
-        }),
-        ...openaiResponsesAccounts.map((account) => {
-          const id = String(account.id || '')
-          const shortId = id ? id.slice(0, 8) : '未知'
-          return {
-            id,
-            name: account.name || `Responses账号 ${shortId}`,
-            platform: 'openai-responses'
-          }
-        })
-      ]
-    } else if (group === 'gemini') {
-      const [geminiAccounts, geminiApiAccounts] = await Promise.all([
-        geminiAccountService.getAllAccounts(),
-        geminiApiAccountService.getAllAccounts(true)
-      ])
-
-      accounts = [
-        ...geminiAccounts.map((account) => {
-          const id = String(account.id || '')
-          const shortId = id ? id.slice(0, 8) : '未知'
-          return {
-            id,
-            name: account.name || account.email || `Gemini账号 ${shortId}`,
-            platform: 'gemini'
-          }
-        }),
-        ...geminiApiAccounts.map((account) => {
-          const id = String(account.id || '')
-          const shortId = id ? id.slice(0, 8) : '未知'
-          return {
-            id,
-            name: account.name || `Gemini-API账号 ${shortId}`,
-            platform: 'gemini-api'
-          }
-        })
-      ]
-    } else if (group === 'droid') {
+    if (group === 'droid') {
       const droidAccounts = await droidAccountService.getAllAccounts()
       accounts = droidAccounts.map((account) => {
         const id = String(account.id || '')
@@ -1354,29 +1217,6 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
           id,
           name: account.name || account.ownerEmail || account.ownerName || `Droid账号 ${shortId}`,
           platform: 'droid'
-        }
-      })
-    } else if (group === 'grok') {
-      const grokAccounts = await grokAccountService.getAllAccounts(true)
-      accounts = grokAccounts.map((account) => {
-        const id = String(account.id || '')
-        const shortId = id ? id.slice(0, 8) : '未知'
-        return {
-          id,
-          name: account.name || account.email || `Grok账号 ${shortId}`,
-          platform: 'grok'
-        }
-      })
-    } else if (group === 'bedrock') {
-      const result = await bedrockAccountService.getAllAccounts()
-      const bedrockAccounts = result?.success ? result.data : []
-      accounts = bedrockAccounts.map((account) => {
-        const id = String(account.id || '')
-        const shortId = id ? id.slice(0, 8) : '未知'
-        return {
-          id,
-          name: account.name || `Bedrock账号 ${shortId}`,
-          platform: 'bedrock'
         }
       })
     }
@@ -2746,15 +2586,7 @@ router.get('/api-keys/:keyId/usage-records', authenticateAdmin, async (req, res)
     const rawRecords = await redis.getUsageRecords(keyId, 5000)
 
     const accountServices = [
-      { type: 'claude', getter: (id) => claudeAccountService.getAccount(id) },
-      { type: 'claude-console', getter: (id) => claudeConsoleAccountService.getAccount(id) },
-      { type: 'ccr', getter: (id) => ccrAccountService.getAccount(id) },
-      { type: 'openai', getter: (id) => openaiAccountService.getAccount(id) },
-      { type: 'openai-responses', getter: (id) => openaiResponsesAccountService.getAccount(id) },
-      { type: 'gemini', getter: (id) => geminiAccountService.getAccount(id) },
-      { type: 'gemini-api', getter: (id) => geminiApiAccountService.getAccount(id) },
-      { type: 'droid', getter: (id) => droidAccountService.getAccount(id) },
-      { type: 'grok', getter: (id) => grokAccountService.getAccount(id, { includeSecrets: false }) }
+      { type: 'droid', getter: (id) => droidAccountService.getAccount(id) }
     ]
 
     const accountCache = new Map()

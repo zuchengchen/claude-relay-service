@@ -11,8 +11,7 @@ const path = require('path')
 
 const redis = require('../src/models/redis')
 const apiKeyService = require('../src/services/apiKeyService')
-const claudeAccountService = require('../src/services/account/claudeAccountService')
-const bedrockAccountService = require('../src/services/account/bedrockAccountService')
+const droidAccountService = require('../src/services/account/droidAccountService')
 
 const program = new Command()
 
@@ -104,7 +103,7 @@ program
       const [, apiKeys, accounts] = await Promise.all([
         redis.getSystemStats(),
         apiKeyService.getAllApiKeysFast(),
-        claudeAccountService.getAllAccounts()
+        droidAccountService.getAllAccounts()
       ])
 
       spinner.succeed('系统状态获取成功')
@@ -114,7 +113,7 @@ program
       const statusData = [
         ['项目', '数量', '状态'],
         ['API Keys', apiKeys.length, `${apiKeys.filter((k) => k.isActive).length} 活跃`],
-        ['Claude 账户', accounts.length, `${accounts.filter((a) => a.isActive).length} 活跃`],
+        ['Droid 账户', accounts.length, `${accounts.filter((a) => a.isActive).length} 活跃`],
         ['Redis 连接', redis.isConnected ? '已连接' : '未连接', redis.isConnected ? '🟢' : '🔴'],
         ['运行时间', `${Math.floor(process.uptime() / 60)} 分钟`, '🕐']
       ]

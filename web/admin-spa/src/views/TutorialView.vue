@@ -59,16 +59,13 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import ClaudeCodeTutorial from '@/components/tutorial/ClaudeCodeTutorial.vue'
-import GeminiCliTutorial from '@/components/tutorial/GeminiCliTutorial.vue'
-import CodexTutorial from '@/components/tutorial/CodexTutorial.vue'
 import DroidCliTutorial from '@/components/tutorial/DroidCliTutorial.vue'
 
 // 当前系统选择
 const activeTutorialSystem = ref('windows')
 
 // 当前 CLI 工具选择
-const activeCliTool = ref('claude-code')
+const activeCliTool = ref('droid-cli')
 
 // 系统列表
 const tutorialSystems = [
@@ -79,9 +76,6 @@ const tutorialSystems = [
 
 // CLI 工具列表
 const cliTools = [
-  { key: 'claude-code', name: 'Claude Code', icon: 'fas fa-robot', component: ClaudeCodeTutorial },
-  { key: 'codex', name: 'Codex', icon: 'fas fa-code', component: CodexTutorial },
-  { key: 'gemini-cli', name: 'Gemini CLI', icon: 'fab fa-google', component: GeminiCliTutorial },
   { key: 'droid-cli', name: 'Droid CLI', icon: 'fas fa-terminal', component: DroidCliTutorial }
 ]
 
