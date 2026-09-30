@@ -1781,7 +1781,10 @@ const requestLogger = (req, res, next) => {
   if (req.originalUrl !== '/health') {
     logger.debug(`▶ [${requestId}] ${req.method} ${req.originalUrl}`, {
       ip: clientIP,
-      body: req.body && Object.keys(req.body).length > 0 ? req.body : undefined
+      body:
+        req.body && Object.keys(req.body).length > 0 && !req.originalUrl.includes('/balance/script')
+          ? req.body
+          : undefined
     })
   }
 
@@ -1810,8 +1813,11 @@ const requestLogger = (req, res, next) => {
     // 构建树形 metadata
     const meta = { requestId }
 
+    // 余额脚本配置的请求/响应体包含 apiKey/token，不写入日志
+    const hasSensitiveBody = req.originalUrl.includes('/balance/script')
+
     // 请求体（非 GET 且有内容时显示）
-    if (req.method !== 'GET' && req.body && Object.keys(req.body).length > 0) {
+    if (!hasSensitiveBody && req.method !== 'GET' && req.body && Object.keys(req.body).length > 0) {
       meta.req = req.body
     }
 
@@ -1822,7 +1828,7 @@ const requestLogger = (req, res, next) => {
     }
 
     // 响应体
-    if (res._responseBody) {
+    if (res._responseBody && !hasSensitiveBody) {
       meta.res = res._responseBody
     }
 

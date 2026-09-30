@@ -10,7 +10,8 @@ const { isBalanceScriptEnabled } = require('../utils/featureFlags')
 function isUrlSafe(url) {
   try {
     const parsed = new URL(url)
-    const hostname = parsed.hostname.toLowerCase()
+    // WHATWG URL 对 IPv6 字面量保留方括号（如 '[::1]'），去掉后再匹配
+    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '')
 
     // 禁止的协议
     if (!['http:', 'https:'].includes(parsed.protocol)) {
@@ -27,8 +28,10 @@ function isUrlSafe(url) {
       /^169\.254\./, // AWS metadata
       /^0\./, // 0.0.0.0
       /^::1$/,
-      /^fc00:/i,
-      /^fe80:/i,
+      /^::$/, // 未指定地址
+      /^::ffff:/i, // IPv4-mapped IPv6（如 ::ffff:7f00:1 = 127.0.0.1）
+      /^f[cd][0-9a-f]{2}:/i, // fc00::/7 唯一本地地址
+      /^fe[89ab][0-9a-f]:/i, // fe80::/10 链路本地地址
       /\.local$/i,
       /\.internal$/i,
       /\.localhost$/i
@@ -112,7 +115,9 @@ class BalanceScriptService {
       url: request.url,
       method: (request.method || 'GET').toUpperCase(),
       headers: request.headers || {},
-      timeout: timeoutMs
+      timeout: timeoutMs,
+      // 只校验了初始 URL，禁止跟随重定向，避免被 302 引到内网地址
+      maxRedirects: 0
     }
 
     if (request.params) {

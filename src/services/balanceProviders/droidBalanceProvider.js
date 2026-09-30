@@ -6,6 +6,11 @@ const { resolveFactoryPeriodEndMs } = require('../../utils/factoryUsageLimit')
 const FACTORY_CHAT_USAGE_URL = 'https://app.factory.ai/api/organization/members/chat-usage'
 const DEFAULT_USER_AGENT = 'factory-cli/0.229.0'
 const CREDENTIAL_INVALID_MESSAGE = 'Factory 凭证无效或已过期（下次转发会自动刷新）'
+const API_KEY_INVALID_MESSAGE = 'Factory API Key 无效或已失效，请更换'
+
+const isApiKeyAccount = (account) =>
+  typeof account?.authenticationMethod === 'string' &&
+  account.authenticationMethod.toLowerCase().trim() === 'api_key'
 
 // null/undefined/'' 视为缺失，避免 Number(null) === 0 把"没有字段"当成 0
 const toFiniteNumber = (value) => {
@@ -75,14 +80,23 @@ class DroidBalanceProvider extends BaseBalanceProvider {
     if (!response.success) {
       const { status } = response
       if (status === 401 || status === 403) {
-        throw new Error(CREDENTIAL_INVALID_MESSAGE)
+        // API Key 不会自动刷新，提示换 Key；OAuth token 由下一次转发刷新
+        throw new Error(
+          isApiKeyAccount(fresh) ? API_KEY_INVALID_MESSAGE : CREDENTIAL_INVALID_MESSAGE
+        )
       }
       const detail = this._redact(response.error || '请求失败', credential)
       throw new Error(`Factory 配额查询失败: ${status ? `HTTP ${status} ` : ''}${detail}`)
     }
 
     const usage = response.data?.usage
-    if (!usage || typeof usage !== 'object' || !usage.standard) {
+    // totalAllowance 缺失/非数字时视为格式变化，报错而不是当成 0 配额缓存 1h
+    if (
+      !usage ||
+      typeof usage !== 'object' ||
+      !usage.standard ||
+      toFiniteNumber(usage.standard.totalAllowance) === null
+    ) {
       throw new Error('Factory 配额响应格式无法识别')
     }
 
@@ -96,12 +110,7 @@ class DroidBalanceProvider extends BaseBalanceProvider {
   }
 
   async _resolveCredential(account) {
-    const authMethod =
-      typeof account.authenticationMethod === 'string'
-        ? account.authenticationMethod.toLowerCase().trim()
-        : ''
-
-    if (authMethod === 'api_key') {
+    if (isApiKeyAccount(account)) {
       const entries = await droidAccountService.getDecryptedApiKeyEntries(account.id)
       const active = (entries || []).find((entry) => entry && entry.key && entry.status !== 'error')
       return active ? active.key : null
@@ -136,6 +145,9 @@ class DroidBalanceProvider extends BaseBalanceProvider {
     if (total > 0) {
       const raw = ratio !== null ? ratio * 100 : (used / total) * 100
       percentage = Math.round(raw * 100) / 100
+    } else if (used > 0) {
+      // 没有配额但已有用量：按用尽显示，避免显示成绿色 0%
+      percentage = 100
     }
 
     return {

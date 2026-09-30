@@ -272,6 +272,38 @@ describe('AccountBalanceService', () => {
       expect(result.data.lastRefreshAt).toBe('2026-09-30T00:00:00Z')
     })
 
+    it('should share one provider call for concurrent requests of the same account', async () => {
+      const mockRedis = buildMockRedis()
+      const service = buildService(mockRedis)
+
+      let resolveQuery
+      const provider = {
+        queryBalance: jest.fn(
+          () =>
+            new Promise((resolve) => {
+              resolveQuery = resolve
+            })
+        )
+      }
+      service.registerProvider('droid', provider)
+
+      const account = { id: 'droid-concurrent', name: 'DC' }
+      const options = { queryApi: 'auto', useCache: true }
+      const first = service._getAccountBalanceForAccount(account, 'droid', options)
+      const second = service._getAccountBalanceForAccount(account, 'droid', options)
+
+      // 等两个请求都走到 provider 调用处
+      await new Promise((resolve) => setImmediate(resolve))
+      resolveQuery({ balance: null, queryMethod: 'api', quota: factoryQuota })
+      const [r1, r2] = await Promise.all([first, second])
+
+      expect(provider.queryBalance).toHaveBeenCalledTimes(1)
+      expect(mockRedis.setAccountBalance).toHaveBeenCalledTimes(1)
+      expect(r1.data.quota).toEqual(factoryQuota)
+      expect(r2.data.quota).toEqual(factoryQuota)
+      expect(service.inFlight.size).toBe(0)
+    })
+
     it('should keep auto as local for platforms outside the whitelist', async () => {
       const mockRedis = buildMockRedis()
       const service = buildService(mockRedis)

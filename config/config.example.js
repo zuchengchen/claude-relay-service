@@ -221,8 +221,8 @@ const config = {
   accountBalance: {
     // 是否允许执行自定义余额脚本（安全开关）
     // 说明：脚本能力可发起任意 HTTP 请求并在服务端执行 extractor 逻辑，建议仅在受控环境开启
-    // 默认保持开启；如需禁用请显式设置：BALANCE_SCRIPT_ENABLED=false
-    enableBalanceScript: process.env.BALANCE_SCRIPT_ENABLED !== 'false'
+    // ⚠️ vm 不是安全沙箱，脚本可逃逸到宿主进程（RCE），默认关闭；如需启用请显式设置：BALANCE_SCRIPT_ENABLED=true
+    enableBalanceScript: process.env.BALANCE_SCRIPT_ENABLED === 'true'
   },
 
   // 📬 用户消息队列配置

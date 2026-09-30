@@ -211,6 +211,51 @@ describe('DroidBalanceProvider', () => {
     expect(provider.makeRequest).not.toHaveBeenCalled()
   })
 
+  it('throws format error when totalAllowance is missing instead of reporting 0%', async () => {
+    droidAccountService.getAccount.mockResolvedValue({
+      id: 'droid-noallowance',
+      authenticationMethod: 'GoogleOAuth',
+      accessToken: TOKEN
+    })
+    provider.makeRequest.mockResolvedValue(buildUsageResponse({ totalAllowance: undefined }))
+
+    await expect(provider.queryBalance({ id: 'droid-noallowance' })).rejects.toThrow(
+      'Factory 配额响应格式无法识别'
+    )
+  })
+
+  it('shows 100% when allowance is 0 but tokens were used', async () => {
+    droidAccountService.getAccount.mockResolvedValue({
+      id: 'droid-zero',
+      authenticationMethod: 'GoogleOAuth',
+      accessToken: TOKEN
+    })
+    provider.makeRequest.mockResolvedValue(
+      buildUsageResponse({ totalAllowance: 0, userTokens: 500, usedRatio: 0 })
+    )
+
+    const result = await provider.queryBalance({ id: 'droid-zero' })
+
+    expect(result.quota).toEqual(
+      expect.objectContaining({ total: 0, used: 500, remaining: 0, percentage: 100 })
+    )
+  })
+
+  it('tells api_key accounts to replace the key on 401', async () => {
+    droidAccountService.getAccount.mockResolvedValue({
+      id: 'droid-key-401',
+      authenticationMethod: 'api_key'
+    })
+    droidAccountService.getDecryptedApiKeyEntries.mockResolvedValue([
+      { id: 'k1', key: 'fk-revoked', status: 'active' }
+    ])
+    provider.makeRequest.mockResolvedValue({ success: false, status: 401, error: 'Unauthorized' })
+
+    await expect(provider.queryBalance({ id: 'droid-key-401' })).rejects.toThrow(
+      'Factory API Key 无效或已失效，请更换'
+    )
+  })
+
   it('never refreshes tokens', async () => {
     droidAccountService.getAccount.mockResolvedValue({
       id: 'droid-norefresh',

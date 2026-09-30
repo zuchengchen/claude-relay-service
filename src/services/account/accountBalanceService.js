@@ -10,6 +10,7 @@ class AccountBalanceService {
     this.logger = options.logger || logger
 
     this.providers = new Map()
+    this.inFlight = new Map()
 
     this.CACHE_TTL_SECONDS = 3600
     this.LOCAL_TTL_SECONDS = 300
@@ -369,14 +370,21 @@ class AccountBalanceService {
           scriptMeta
         )
       }
-      providerResult = await this._getBalanceFromProvider(provider, account)
+      // 同一账户的并发查询共享一次远程调用（前端桌面表格与移动卡片会同时挂载，多标签页同理）
+      providerResult = await this._singleFlight(`${platform}:${accountId}`, async () => {
+        const result = await this._getBalanceFromProvider(provider, account)
+        // 仅缓存“真实远程查询成功”的结果，避免把字段/本地降级结果当作 API 结果缓存 1h
+        if (this._isRemoteSuccess(result)) {
+          await this.redis.setAccountBalance(platform, accountId, result, this.CACHE_TTL_SECONDS)
+        }
+        return result
+      })
     }
 
-    const isRemoteSuccess =
-      providerResult.status === 'success' && ['api', 'script'].includes(providerResult.queryMethod)
+    const isRemoteSuccess = this._isRemoteSuccess(providerResult)
 
-    // 仅缓存“真实远程查询成功”的结果，避免把字段/本地降级结果当作 API 结果缓存 1h
-    if (isRemoteSuccess) {
+    // 脚本结果同样只缓存成功的（Provider 结果已在 single-flight 内写入缓存）
+    if (isRemoteSuccess && scriptEnabled && scriptConfigured) {
       await this.redis.setAccountBalance(
         platform,
         accountId,
@@ -403,6 +411,27 @@ class AccountBalanceService {
       null,
       scriptMeta
     )
+  }
+
+  _isRemoteSuccess(result) {
+    return result?.status === 'success' && ['api', 'script'].includes(result.queryMethod)
+  }
+
+  // 相同 key 的并发调用复用同一个进行中的 Promise，结束后立即释放
+  async _singleFlight(key, fn) {
+    const existing = this.inFlight.get(key)
+    if (existing) {
+      return existing
+    }
+    const promise = (async () => {
+      try {
+        return await fn()
+      } finally {
+        this.inFlight.delete(key)
+      }
+    })()
+    this.inFlight.set(key, promise)
+    return promise
   }
 
   async _getBalanceFromScript(scriptConfig, accountId, platform) {
