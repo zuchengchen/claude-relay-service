@@ -253,6 +253,20 @@ const config = {
     // 上游 retry-after 派生的暂停时长上限（秒）。周级限额的 retry-after 可达数天，
     // 若不钳制会把账号整整下线数天。长时限额应由账号级/模型级限流桶承担。
     maxCustomTtlSeconds: parseInt(process.env.UPSTREAM_ERROR_MAX_CUSTOM_TTL_SECONDS) || 300
+  },
+
+  // 🤖 Droid（Factory）额度窗口展示与估算
+  // 说明：7d 取 Factory chat-usage 实测值；5h / 30d 为估算（样本不足时用下面的默认值）。
+  // 代码里每一项都有同样的默认值，本地 config.js 没有这一段也能正常工作。
+  droidUsage: {
+    // 5h 上限 = 周额度 × 该比例（收集到 3 个以上 402 上限样本后改用样本中位数）
+    fiveHourCapRatio: parseFloat(process.env.DROID_USAGE_FIVE_HOUR_CAP_RATIO) || 0.3,
+    // 30d 上限（Factory token）；null 时依次用样本中位数、周额度 × 30/7
+    thirtyDayCapTokens: parseInt(process.env.DROID_USAGE_THIRTY_DAY_CAP_TOKENS) || null,
+    // 没有足够本周数据时，relay 美元 / 百万 Factory token 的默认比率
+    defaultUsdPerMTokens: parseFloat(process.env.DROID_USAGE_DEFAULT_USD_PER_M_TOKENS) || 0.9,
+    // chat-usage 快照缓存秒数（页面加载读缓存，「刷新余额」强制刷新）
+    snapshotCacheSeconds: parseInt(process.env.DROID_USAGE_SNAPSHOT_CACHE_SECONDS) || 120
   }
 }
 

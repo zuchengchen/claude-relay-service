@@ -1535,6 +1535,11 @@ class DroidAccountService {
       // 清除临时不可用状态
       await upstreamErrorHelper.clearTempUnavailable(accountId, 'droid').catch(() => {})
 
+      // 清除 Factory 额度限额记录（例如已在 Factory 端开启 Extra Usage / Droid Core），立即恢复调度
+      // 懒加载：droidUsageLimitService 不依赖本服务，这里只是避免加载顺序问题
+      const droidUsageLimitService = require('../droidUsageLimitService')
+      await droidUsageLimitService.clearLimits(accountId)
+
       // 异步发送 Webhook 通知（忽略错误）
       try {
         const webhookNotifier = require('../../utils/webhookNotifier')

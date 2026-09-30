@@ -13,6 +13,13 @@ const { createRequestDetailMeta } = require('../../utils/requestDetailHelper')
 const fixedClaudeCacheRatio = require('../../utils/fixedClaudeCacheRatio')
 const { isClaude5xModel } = require('../../utils/claude5xModel')
 const droidClaudeOpenAICompat = require('../../utils/droidClaudeOpenAICompat')
+const { parseFactoryUsageLimit, formatResetTime } = require('../../utils/factoryUsageLimit')
+const droidUsageLimitService = require('../droidUsageLimitService')
+const droidUsageWindowService = require('../droidUsageWindowService')
+
+// 全部用尽 429 在头里宣告的重置时间上限（见 _buildAccountsExhaustedResponse）
+const MAX_ADVERTISED_RESET_MS = 15 * 60 * 1000
+const DEFAULT_ADVERTISED_RESET_MS = 60 * 1000
 
 const SYSTEM_PROMPT = 'You are Droid, an AI software engineering agent built by Factory.'
 const RUNTIME_EVENT_FMT_PAYLOAD = 'fmtPayload'
@@ -118,6 +125,79 @@ class DroidRelayService {
         code: typeof code === 'string' ? code : 'upstream_error'
       }
     }
+  }
+
+  /**
+   * Factory 402 能解析成额度用尽时返回限额信息，否则返回 null（走原有 402 逻辑）
+   * 必须在响应客户端之前同步判定：流式分支不 await _handleUpstreamClientError
+   */
+  _parseUsageLimit(statusCode, body) {
+    if (statusCode !== 402) {
+      return null
+    }
+    return parseFactoryUsageLimit(body, Date.now())
+  }
+
+  /**
+   * 单号刚用尽：返回 429 且不带重置头。
+   * sub2api 非池模式收到 402 会永久停用账号；不带重置头的 429 只默认冷却几秒，
+   * 下一次请求由调度器换号（或在全部用尽时返回带重置头的 429）。
+   */
+  _formatUsageLimitClientError(usageLimit) {
+    return {
+      error: {
+        message: usageLimit.detail,
+        type: 'rate_limit_error',
+        code: 'usage_limit_reached'
+      }
+    }
+  }
+
+  /**
+   * 所有 Droid 账号都只因临时原因不可用：429 + retry-after + anthropic-ratelimit-unified-reset（Unix 秒）
+   *
+   * 头里宣告的重置时间最多 15 分钟：sub2api 会把 unified-reset 原样写成账号限流截止时间，
+   * 真实的最早恢复可能在几天后（周额度），宣告那么久会让 sub2api 在我们「重置状态」、开 Extra Usage
+   * 或新增账号之后仍然不发流量。宣告短一些，sub2api 到点自己重试，重试只是一次 Redis 判定。
+   * 真实的最早恢复时间写在响应 message 里。
+   */
+  _buildAccountsExhaustedResponse(error) {
+    const resetAt = Number(error?.resetAt)
+    const now = Date.now()
+    const advertisedResetAt = Number.isFinite(resetAt)
+      ? Math.min(Math.max(resetAt, now + 1000), now + MAX_ADVERTISED_RESET_MS)
+      : now + DEFAULT_ADVERTISED_RESET_MS
+    const retryAfterSeconds = Math.max(1, Math.ceil((advertisedResetAt - now) / 1000))
+    const resetUnixSeconds = Math.ceil(advertisedResetAt / 1000)
+    const message = Number.isFinite(resetAt)
+      ? `所有 Droid 账号暂不可用，最早 ${formatResetTime(resetAt)} 恢复`
+      : '所有 Droid 账号暂不可用'
+
+    return {
+      statusCode: 429,
+      headers: {
+        'Content-Type': 'application/json',
+        'retry-after': String(retryAfterSeconds),
+        'anthropic-ratelimit-unified-reset': String(resetUnixSeconds)
+      },
+      body: JSON.stringify({
+        error: {
+          type: 'rate_limit_error',
+          code: 'droid_accounts_exhausted',
+          message
+        }
+      })
+    }
+  }
+
+  // 转发成功（usage > 0）后更新 5h / 30d 窗口，不阻塞响应，失败只打 warn
+  _notifyRequestSucceeded(account, requestStartMs, totalTokens) {
+    if (!account?.id || !(totalTokens > 0)) {
+      return
+    }
+    droidUsageWindowService.onRequestSucceeded(account, requestStartMs).catch((error) => {
+      logger.warn(`⚠️ 更新 Droid 额度窗口失败: ${account.id}: ${error.message}`)
+    })
   }
 
   _mapFactoryAnthropicModel(model) {
@@ -271,6 +351,7 @@ class DroidRelayService {
       skipUsageRecord = false,
       disableStreaming = false
     } = options
+    const requestStartMs = Date.now()
     const keyInfo = apiKeyData || {}
     const clientApiKeyId = keyInfo.id || null
     let normalizedEndpoint = this._normalizeEndpointType(endpointType)
@@ -404,7 +485,8 @@ class DroidRelayService {
           sessionHash,
           clientApiKeyId,
           0,
-          outboundFormat
+          outboundFormat,
+          requestStartMs
         )
       } else {
         // 非流式响应：使用 axios
@@ -449,10 +531,19 @@ class DroidRelayService {
           clientRequest,
           normalizedEndpoint,
           skipUsageRecord,
-          outboundFormat
+          outboundFormat,
+          requestStartMs
         )
       }
     } catch (error) {
+      // 所有账号都只因额度用尽或临时暂停不可用：返回带重置时间的 429，不标记任何账号
+      if (error?.code === 'DROID_ACCOUNTS_EXHAUSTED') {
+        logger.warn(
+          `⏳ Droid 账号全部暂不可用，返回 429（最早 ${formatResetTime(error.resetAt)} 恢复）`
+        )
+        return this._buildAccountsExhaustedResponse(error)
+      }
+
       // 客户端主动断开连接是正常情况，使用 INFO 级别
       if (error.message === 'Client disconnected') {
         logger.info(`🔌 Droid relay ended: Client disconnected`)
@@ -481,6 +572,9 @@ class DroidRelayService {
         await upstreamErrorHelper.markTempUnavailable(account.id, 'droid', 503).catch(() => {})
       }
 
+      // 非流式 402 正文在 error.response.data 里；在响应之前判定是否额度用尽
+      const usageLimit = this._parseUsageLimit(status, error?.response?.data)
+
       if (status >= 400 && status < 500) {
         try {
           await this._handleUpstreamClientError(status, {
@@ -488,10 +582,20 @@ class DroidRelayService {
             selectedAccountApiKey: selectedApiKey,
             endpointType: normalizedEndpoint,
             sessionHash,
-            clientApiKeyId
+            clientApiKeyId,
+            errorBody: error?.response?.data,
+            usageLimit
           })
         } catch (handlingError) {
           logger.error('❌ 处理 Droid 4xx 异常失败:', handlingError)
+        }
+      }
+
+      if (usageLimit) {
+        return {
+          statusCode: 429,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this._formatUsageLimitClientError(usageLimit))
         }
       }
 
@@ -533,7 +637,8 @@ class DroidRelayService {
     sessionHash = null,
     clientApiKeyId = null,
     retryCount = 0,
-    outboundFormat = null
+    outboundFormat = null,
+    requestStartMs = Date.now()
   ) {
     return new Promise((resolve, reject) => {
       const url = new URL(apiUrl)
@@ -669,7 +774,8 @@ class DroidRelayService {
                   sessionHash,
                   clientApiKeyId,
                   retryCount + 1,
-                  outboundFormat
+                  outboundFormat,
+                  requestStartMs
                 )
                   .then(resolveOnce)
                   .catch(rejectOnce)
@@ -685,23 +791,32 @@ class DroidRelayService {
                   .catch(() => {})
               }
             }
+            // 下面的处理不 await，402 → 429 必须在这里同步判定
+            const usageLimit = this._parseUsageLimit(res.statusCode, body)
             if (res.statusCode >= 400 && res.statusCode < 500) {
               this._handleUpstreamClientError(res.statusCode, {
                 account,
                 selectedAccountApiKey,
                 endpointType,
                 sessionHash,
-                clientApiKeyId
+                clientApiKeyId,
+                errorBody: body,
+                usageLimit
               }).catch((handlingError) => {
                 logger.error('❌ 处理 Droid 流式4xx 异常失败:', handlingError)
               })
             }
+            const clientStatus = usageLimit ? 429 : res.statusCode
             if (!clientResponse.headersSent) {
               clientResponse
-                .status(res.statusCode)
-                .json(this._formatClientError(res.statusCode, body))
+                .status(clientStatus)
+                .json(
+                  usageLimit
+                    ? this._formatUsageLimitClientError(usageLimit)
+                    : this._formatClientError(res.statusCode, body)
+                )
             }
-            resolveOnce({ statusCode: res.statusCode, streaming: true })
+            resolveOnce({ statusCode: clientStatus, streaming: true })
           })
 
           res.on('close', () => {
@@ -791,6 +906,13 @@ class DroidRelayService {
             }
           }
           clientResponse.end()
+
+          // Factory 额度按实际消耗计，与是否记录本地 usage 无关
+          this._notifyRequestSucceeded(
+            account,
+            requestStartMs,
+            this._getTotalTokens(currentUsageData)
+          )
 
           // 记录 usage 数据
           if (!skipUsageRecord) {
@@ -1489,7 +1611,8 @@ class DroidRelayService {
     clientRequest,
     endpointType,
     skipUsageRecord = false,
-    outboundFormat = null
+    outboundFormat = null,
+    requestStartMs = Date.now()
   ) {
     let { data } = response
     const keyId = apiKeyData?.id
@@ -1512,6 +1635,8 @@ class DroidRelayService {
     } else if (outboundFormat === 'responses') {
       data = droidClaudeOpenAICompat.anthropicToResponses(data, model)
     }
+
+    this._notifyRequestSucceeded(account, requestStartMs, this._getTotalTokens(normalizedUsage))
 
     if (!skipUsageRecord) {
       const droidCosts = await this._recordUsage(
@@ -1633,7 +1758,9 @@ class DroidRelayService {
       selectedAccountApiKey = null,
       endpointType = null,
       sessionHash = null,
-      clientApiKeyId = null
+      clientApiKeyId = null,
+      errorBody = null,
+      usageLimit = null
     } = context
 
     const accountId = this._extractAccountId(account)
@@ -1711,11 +1838,52 @@ class DroidRelayService {
 
     const clientErrorAutoProtectionDisabled =
       account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
+
+    // Factory 402 额度用尽：记录限额（调度器在重置前避开该号），不再每 5 分钟冷却一次再撞 402
+    if (statusCode === 402 && usageLimit) {
+      const recorded = await this._handleUsageLimit(account, usageLimit, errorBody)
+      if (!recorded && !clientErrorAutoProtectionDisabled) {
+        // 限额写不进去（Redis 异常）时退回原有的短冷却
+        await upstreamErrorHelper.markTempUnavailable(accountId, 'droid', statusCode)
+      }
+      await this._clearAccountStickyMapping(normalizedEndpoint, sessionHash, clientApiKeyId)
+      return
+    }
+
     // Factory 400/403 常见于模型名或请求体被拒，不是 token 失效；不要把唯一账号冷却 30 分钟。
     if (!clientErrorAutoProtectionDisabled && statusCode !== 400 && statusCode !== 403) {
       await upstreamErrorHelper.markTempUnavailable(accountId, 'droid', statusCode)
     }
     await this._clearAccountStickyMapping(normalizedEndpoint, sessionHash, clientApiKeyId)
+  }
+
+  /**
+   * 记录 402 解析出的限额，并在后台纠正额度窗口、采样上限
+   * @returns {Promise<boolean>} 是否写入成功
+   */
+  async _handleUsageLimit(account, usageLimit, errorBody = null) {
+    const accountId = this._extractAccountId(account)
+    const recorded = await droidUsageLimitService.recordLimit(accountId, usageLimit)
+    if (!recorded) {
+      return false
+    }
+
+    logger.warn(
+      `🚧 Droid 账号 ${account?.name || accountId} 额度用尽（${usageLimit.window}），${formatResetTime(recorded.resetAt)} 前不再调度`
+    )
+
+    droidUsageWindowService.onUsageLimit(account, usageLimit).catch((error) => {
+      logger.warn(`⚠️ 处理 Droid 额度窗口失败: ${accountId}: ${error.message}`)
+    })
+    upstreamErrorHelper
+      .recordErrorHistory(accountId, 'droid', 402, 'usage_limit', {
+        window: usageLimit.window,
+        resetAt: new Date(recorded.resetAt).toISOString(),
+        errorBody
+      })
+      .catch(() => {})
+
+    return true
   }
 
   /**

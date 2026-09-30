@@ -416,6 +416,40 @@
                           <div class="h-px bg-gray-200 dark:bg-gray-600/50"></div>
                           <div class="space-y-2">
                             <div class="text-sm font-semibold text-white dark:text-gray-900">
+                              Droid（Factory）
+                            </div>
+                            <div class="text-gray-200 dark:text-gray-600">
+                              Factory 按 token 计 5 小时、7 天、30 天三档额度。带 ≈
+                              的是估算值；标「限额」的窗口来自 Factory 402，账号在重置前不参与调度。
+                            </div>
+                            <div class="space-y-1 text-gray-200 dark:text-gray-600">
+                              <div class="flex items-start gap-2">
+                                <i class="fas fa-clock mt-[2px] text-[10px] text-indigo-500"></i>
+                                <span class="font-medium text-white dark:text-gray-900"
+                                  >5h：从第一次成功转发开始计时，上限来自 402
+                                  样本；样本不足时按周额度 × 可配置比例（默认 30%）。</span
+                                >
+                              </div>
+                              <div class="flex items-start gap-2">
+                                <i class="fas fa-history mt-[2px] text-[10px] text-emerald-500"></i>
+                                <span class="font-medium text-white dark:text-gray-900"
+                                  >7d：Factory chat-usage 精确值，startDate + 7 天重置。</span
+                                >
+                              </div>
+                              <div class="flex items-start gap-2">
+                                <i
+                                  class="fas fa-calendar-alt mt-[2px] text-[10px] text-amber-500"
+                                ></i>
+                                <span class="font-medium text-white dark:text-gray-900"
+                                  >30d：按 Factory 周汇总，上限未经确认；底部美元值按 relay
+                                  记账比率换算。</span
+                                >
+                              </div>
+                            </div>
+                          </div>
+                          <div class="h-px bg-gray-200 dark:bg-gray-600/50"></div>
+                          <div class="space-y-2">
+                            <div class="text-sm font-semibold text-white dark:text-gray-900">
                               Claude OAuth 账户
                             </div>
                             <div class="text-gray-200 dark:text-gray-600">
@@ -1391,6 +1425,9 @@
                       </div>
                     </div>
                   </div>
+                  <div v-else-if="account.platform === 'droid'">
+                    <DroidUsageWindows :now-ts="tempUnavailableNowTs" :usage="account.droidUsage" />
+                  </div>
                   <div v-else class="text-sm text-gray-400">
                     <span class="text-xs">N/A</span>
                   </div>
@@ -2121,6 +2158,13 @@
                 </div>
               </div>
             </div>
+            <div
+              v-else-if="account.platform === 'droid'"
+              class="rounded-lg bg-gray-50 px-2 py-1.5 dark:bg-gray-700"
+            >
+              <p class="mb-1 text-xs text-gray-500 dark:text-gray-400">额度窗口（Factory）</p>
+              <DroidUsageWindows :now-ts="tempUnavailableNowTs" :usage="account.droidUsage" />
+            </div>
 
             <!-- 最后使用时间 -->
             <div class="flex items-center justify-between text-xs">
@@ -2580,6 +2624,7 @@ import CustomDropdown from '@/components/common/CustomDropdown.vue'
 import ActionDropdown from '@/components/common/ActionDropdown.vue'
 import GroupManagementModal from '@/components/accounts/GroupManagementModal.vue'
 import BalanceDisplay from '@/components/accounts/BalanceDisplay.vue'
+import DroidUsageWindows from '@/components/accounts/DroidUsageWindows.vue'
 import AccountBalanceScriptModal from '@/components/accounts/AccountBalanceScriptModal.vue'
 
 // 确认弹窗状态
@@ -3484,6 +3529,13 @@ const refreshVisibleBalances = async () => {
   } finally {
     refreshingBalances.value = false
   }
+
+  // 顶部「刷新余额」同时强制刷新 Droid 额度窗口
+  if (eligibleTargets.some((account) => account.platform === 'droid')) {
+    loadDroidUsageWindows({ force: true }).catch((err) => {
+      console.debug('Droid usage windows refresh failed:', err)
+    })
+  }
 }
 
 const updateSelectAllState = () => {
@@ -3803,6 +3855,13 @@ const loadAccounts = async (forceReload = false) => {
       })
     }
 
+    // 异步加载 Droid 账户的 5h / 7d / 30d 额度窗口
+    if (filteredAccounts.some((acc) => acc.platform === 'droid')) {
+      loadDroidUsageWindows().catch((err) => {
+        console.debug('Droid usage windows loading failed:', err)
+      })
+    }
+
     // 异步加载余额缓存（按平台批量）
     loadBalanceCacheForAccounts().catch((err) => {
       console.debug('Balance cache loading failed:', err)
@@ -3826,6 +3885,40 @@ const loadClaudeUsage = async () => {
       return account
     })
   }
+}
+
+// 异步加载 Droid 账户的额度窗口（force 时后端跳过 chat-usage 快照缓存）
+let droidUsageRequestSeq = 0
+const toErrorText = (value, fallback) => {
+  if (typeof value === 'string' && value) return value
+  if (value && typeof value.message === 'string' && value.message) return value.message
+  return fallback
+}
+const loadDroidUsageWindows = async ({ force = false } = {}) => {
+  const accountIds = accounts.value
+    .filter((account) => account.platform === 'droid')
+    .map((account) => account.id)
+  if (accountIds.length === 0) return
+
+  const seq = ++droidUsageRequestSeq
+  const response = await httpApis.getDroidUsageWindowsApi({ accountIds, force })
+  // 只采用最新一次请求的结果，避免慢的旧请求覆盖新数据
+  if (seq !== droidUsageRequestSeq) return
+
+  const ok = response?.success && response.data && typeof response.data === 'object'
+  if (!ok) {
+    console.debug('Droid usage windows unavailable:', response?.message)
+  }
+  const usageMap = ok ? response.data : {}
+  const failureText = ok ? '未返回该账号的额度数据' : toErrorText(response?.message, '请求失败')
+  const requested = new Set(accountIds)
+
+  // 请求失败或缺少某个账号时：有旧数据就保留，没有就写入错误，避免一直显示「加载中」
+  accounts.value = accounts.value.map((account) => {
+    if (account.platform !== 'droid' || !requested.has(account.id)) return account
+    const next = usageMap[account.id] || account.droidUsage || { error: failureText }
+    return next === account.droidUsage ? account : { ...account, droidUsage: next }
+  })
 }
 
 // 记录上一次的排序字段，用于判断下拉选择是否是同一字段被再次选择
@@ -4900,10 +4993,44 @@ const isAccountExpiredForRouting = (account) => {
   return isExpired(account.expiresAt)
 }
 
+// Droid：Factory 402 记录的额度限额（禁用自动保护的账号只展示、不排除）
+const DROID_LIMIT_WINDOW_LABELS = { fiveHour: '5h', sevenDay: '7d', thirtyDay: '30d' }
+
+const getDroidLimitedWindows = (account) => {
+  if (account?.platform !== 'droid') return []
+  const usage = account.droidUsage
+  if (!usage?.windows || usage.autoProtectionDisabled) return []
+
+  const nowTs = tempUnavailableNowTs.value
+  return Object.entries(DROID_LIMIT_WINDOW_LABELS)
+    .map(([key, label]) => ({ key, label, window: usage.windows[key] }))
+    .filter(({ window }) => {
+      if (!window?.limited || !window.resetAt) return false
+      return new Date(window.resetAt).getTime() > nowTs
+    })
+    .map(({ key, label, window }) => ({ key, label, resetAt: window.resetAt }))
+}
+
+const formatDroidLimitRecoveryAt = (resetAt) => {
+  const date = new Date(resetAt)
+  if (Number.isNaN(date.getTime())) return ''
+  const hours = `${date.getHours()}`.padStart(2, '0')
+  const minutes = `${date.getMinutes()}`.padStart(2, '0')
+  const sameDay = date.toDateString() === new Date(tempUnavailableNowTs.value).toDateString()
+  if (sameDay) return `${hours}:${minutes}`
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${month}-${day} ${hours}:${minutes}`
+}
+
 const isAccountRoutingBlocked = (account) => {
   if (!account) return false
 
   if (account.isActive === false || account.schedulable === false) {
+    return true
+  }
+
+  if (getDroidLimitedWindows(account).length > 0) {
     return true
   }
 
@@ -4974,6 +5101,13 @@ const getRoutingBlockReasons = (account) => {
 
   if (account.schedulable === false) {
     reasons.push(getSchedulableReason(account) || '已暂停调度')
+  }
+
+  for (const limited of getDroidLimitedWindows(account)) {
+    const recoveryText = formatDroidLimitRecoveryAt(limited.resetAt)
+    reasons.push(
+      recoveryText ? `${limited.label} 额度用尽，${recoveryText} 恢复` : `${limited.label} 额度用尽`
+    )
   }
 
   if (isAccountRateLimited(account)) {

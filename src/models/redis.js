@@ -2334,6 +2334,107 @@ class RedisClient {
     )
   }
 
+  /**
+   * 账号从 sinceMs 起的本地 relay 费用（美元，估算）
+   * - sinceMs 所在的那一天用小时桶（小时桶 TTL 7 天），之后的整天用按模型的日桶（TTL 32 天）
+   * - sinceMs 超过 7 天时，它所在的那一天也整天按日桶算；最多往前 32 天
+   * - 边界上不满一个桶的部分按整桶计入
+   * @param {string} accountId
+   * @param {number[]} sinceList - 毫秒时间戳数组
+   * @returns {Promise<number[]>} 与 sinceList 一一对应的费用
+   */
+  async getAccountLocalCostsSince(accountId, sinceList = [], options = {}) {
+    const {
+      getHourSlotKeys,
+      getDaySlotKeys,
+      costFromUsageHash
+    } = require('../utils/accountRollingUsage')
+    const HOUR_MS = 3600000
+    const DAY_MS = 24 * HOUR_MS
+    const HOURLY_RETENTION_MS = 7 * DAY_MS
+    const DAILY_RETENTION_DAYS = 32
+
+    const list = Array.isArray(sinceList) ? sinceList : [sinceList]
+    if (!accountId || list.length === 0) {
+      return list.map(() => 0)
+    }
+
+    const nowMs = Number(options.now) || Date.now()
+    const offsetMs = (config.system.timezoneOffset || 8) * HOUR_MS
+    const floorHour = (ms) => Math.floor(ms / HOUR_MS) * HOUR_MS
+    const floorLocalDay = (ms) => Math.floor((ms + offsetMs) / DAY_MS) * DAY_MS - offsetMs
+    const todayStart = floorLocalDay(nowMs)
+    const oldestDayStart = todayStart - (DAILY_RETENTION_DAYS - 1) * DAY_MS
+
+    const plans = list.map((rawSince) => {
+      const sinceMs = Number(rawSince)
+      if (!Number.isFinite(sinceMs) || sinceMs > nowMs) {
+        return { hourKeys: [], dayKeys: [] }
+      }
+
+      const sinceDayStart = floorLocalDay(sinceMs)
+      let hourKeys = []
+      let firstFullDayStart = sinceDayStart + DAY_MS
+
+      if (nowMs - sinceMs <= HOURLY_RETENTION_MS) {
+        const lastHourMs =
+          sinceDayStart === todayStart ? floorHour(nowMs) : sinceDayStart + DAY_MS - HOUR_MS
+        const hourCount = Math.round((lastHourMs - floorHour(sinceMs)) / HOUR_MS) + 1
+        if (hourCount > 0) {
+          hourKeys = getHourSlotKeys(
+            new Date(lastHourMs),
+            hourCount,
+            getDateStringInTimezone,
+            getHourInTimezone
+          )
+        }
+      } else {
+        firstFullDayStart = Math.max(sinceDayStart, oldestDayStart)
+      }
+
+      const dayCount =
+        firstFullDayStart <= todayStart
+          ? Math.round((todayStart - firstFullDayStart) / DAY_MS) + 1
+          : 0
+      const dayKeys =
+        dayCount > 0 ? getDaySlotKeys(new Date(nowMs), dayCount, getDateStringInTimezone) : []
+
+      return { hourKeys, dayKeys }
+    })
+
+    const uniqueHourKeys = [...new Set(plans.flatMap((plan) => plan.hourKeys))]
+    const uniqueDayKeys = [...new Set(plans.flatMap((plan) => plan.dayKeys))]
+
+    const hourCosts = new Map()
+    if (uniqueHourKeys.length > 0) {
+      const pipeline = this.getClientSafe().pipeline()
+      uniqueHourKeys.forEach((hourKey) =>
+        pipeline.hgetall(`account_usage:hourly:${accountId}:${hourKey}`)
+      )
+      const results = await pipeline.exec()
+      uniqueHourKeys.forEach((hourKey, index) => {
+        const [err, data] = results[index] || []
+        hourCosts.set(hourKey, err || !data ? 0 : costFromUsageHash(data))
+      })
+    }
+
+    const dayCosts =
+      uniqueDayKeys.length > 0
+        ? await this._sumModelCostsForAccountDays(accountId, uniqueDayKeys)
+        : new Map()
+
+    return plans.map(
+      (plan) =>
+        plan.hourKeys.reduce((sum, key) => sum + (hourCosts.get(key) || 0), 0) +
+        plan.dayKeys.reduce((sum, key) => sum + (dayCosts.get(key) || 0), 0)
+    )
+  }
+
+  async getAccountLocalCostSince(accountId, sinceMs, options = {}) {
+    const [cost] = await this.getAccountLocalCostsSince(accountId, [sinceMs], options)
+    return cost || 0
+  }
+
   // 📊 获取账户使用统计
   async getAccountUsageStats(accountId, accountType = null) {
     const accountKey = `account_usage:${accountId}`

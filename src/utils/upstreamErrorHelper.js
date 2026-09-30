@@ -382,28 +382,37 @@ const markTempUnavailable = async (
   }
 }
 
+const getTempUnavailableKey = (accountId, accountType) =>
+  `${TEMP_UNAVAILABLE_PREFIX}:${accountType}:${accountId}`
+
+/**
+ * 解释 temp_unavailable 键的 TTL / PTTL（单位由调用方决定，-1/-2 语义相同），
+ * isTempUnavailable 与 droidUsageLimitService.getSchedulingBlock 共用这一份规则
+ * - > 0：仍不可用
+ * - -1：键没有 TTL，理论上不该出现，自动清理以避免「永久不可用」
+ * - -2 或其他：可用
+ * @returns {boolean} 是否仍不可用
+ */
+const interpretTempUnavailableTtl = (ttl, { client, accountId, accountType }) => {
+  if (ttl > 0) {
+    return true
+  }
+  if (ttl === -1) {
+    logger.warn(
+      `⚠️ [UpstreamError] Found temp_unavailable key without TTL for account ${accountId} (${accountType}), auto-clearing`
+    )
+    client.del(getTempUnavailableKey(accountId, accountType)).catch(() => {})
+  }
+  return false
+}
+
 // 检查账户是否临时不可用
 const isTempUnavailable = async (accountId, accountType) => {
   try {
     const redis = getRedis()
     const client = redis.getClientSafe()
-    const key = `${TEMP_UNAVAILABLE_PREFIX}:${accountType}:${accountId}`
-    const ttl = await client.ttl(key)
-
-    if (ttl === -2) {
-      return false
-    }
-
-    if (ttl === -1) {
-      // 理论上该 key 必须带 TTL；如果无 TTL，自动清理以避免“永久不可用”
-      logger.warn(
-        `⚠️ [UpstreamError] Found temp_unavailable key without TTL for account ${accountId} (${accountType}), auto-clearing`
-      )
-      await client.del(key)
-      return false
-    }
-
-    return ttl > 0
+    const ttl = await client.ttl(getTempUnavailableKey(accountId, accountType))
+    return interpretTempUnavailableTtl(ttl, { client, accountId, accountType })
   } catch (error) {
     logger.error(
       `❌ [UpstreamError] Failed to check temp unavailable status for ${accountId}:`,
@@ -515,6 +524,8 @@ const sanitizeErrorForClient = (errorData) => {
 module.exports = {
   markTempUnavailable,
   isTempUnavailable,
+  getTempUnavailableKey,
+  interpretTempUnavailableTtl,
   clearTempUnavailable,
   getAllTempUnavailable,
   classifyError,

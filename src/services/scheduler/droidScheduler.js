@@ -1,14 +1,29 @@
 const droidAccountService = require('../account/droidAccountService')
 const accountGroupService = require('../accountGroupService')
+const droidUsageLimitService = require('../droidUsageLimitService')
 const redis = require('../../models/redis')
 const logger = require('../../utils/logger')
-const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
+const { formatResetTime } = require('../../utils/factoryUsageLimit')
 const {
   isTruthy,
   isAccountHealthy,
   sortAccountsByPriority,
   normalizeEndpointType
 } = require('../../utils/commonHelper')
+
+/**
+ * 所有候选账号都只因临时原因（额度用尽 / temp_unavailable）被排除
+ * resetAt 取最早恢复时间，转发层据此返回 429 + 重置头
+ */
+class DroidAccountsExhaustedError extends Error {
+  constructor(resetAt, exclusions = []) {
+    super(`All Droid accounts are temporarily unavailable until ${new Date(resetAt).toISOString()}`)
+    this.name = 'DroidAccountsExhaustedError'
+    this.code = 'DROID_ACCOUNTS_EXHAUSTED'
+    this.resetAt = resetAt
+    this.exclusions = exclusions
+  }
+}
 
 class DroidScheduler {
   constructor() {
@@ -41,7 +56,35 @@ class DroidScheduler {
     return `${this.STICKY_PREFIX}:${normalizedEndpoint}:${apiKeyPart}:${sessionHash}`
   }
 
-  async _loadGroupAccounts(groupId) {
+  // 健康、可调度且 endpoint 匹配：只有这样的账号的恢复时间才对本次请求有意义
+  _isUsableFor(account, normalizedEndpoint) {
+    return (
+      !!account &&
+      isAccountHealthy(account) &&
+      this._isAccountSchedulable(account) &&
+      this._matchesEndpoint(account, normalizedEndpoint)
+    )
+  }
+
+  // 额度用尽 / temp_unavailable 判定；exclusions 为数组时记录被排除的账号，用于计算最早恢复时间
+  async _checkBlock(account, exclusions, label) {
+    const block = await droidUsageLimitService.getSchedulingBlock(account)
+    if (!block.blocked) {
+      return block
+    }
+
+    if (Array.isArray(exclusions)) {
+      exclusions.push({ accountId: account.id, until: block.until, reason: block.reason })
+    }
+    const detail =
+      block.reason === 'usage_limit'
+        ? `额度用尽（${block.limits.map((item) => item.window).join(', ')}），${formatResetTime(block.until)} 恢复`
+        : `temporarily unavailable，${formatResetTime(block.until)} 恢复`
+    logger.debug(`⏭️ Skipping Droid ${label} ${account.name || account.id} - ${detail}`)
+    return block
+  }
+
+  async _loadGroupAccounts(groupId, normalizedEndpoint, exclusions = []) {
     const memberIds = await accountGroupService.getGroupMembers(groupId)
     if (!memberIds || memberIds.length === 0) {
       return []
@@ -63,16 +106,34 @@ class DroidScheduler {
       if (!account || !isAccountHealthy(account) || !this._isAccountSchedulable(account)) {
         continue
       }
-      const isTempUnavailable = await upstreamErrorHelper.isTempUnavailable(account.id, 'droid')
-      if (isTempUnavailable) {
-        logger.debug(
-          `⏭️ Skipping Droid group member ${account.name || account.id} - temporarily unavailable`
-        )
+      // endpoint 不匹配的成员照旧留给后面的过滤处理，但它的恢复时间不计入 exclusions
+      const block = await this._checkBlock(
+        account,
+        this._matchesEndpoint(account, normalizedEndpoint) ? exclusions : null,
+        'group member'
+      )
+      if (block.blocked) {
         continue
       }
       result.push(account)
     }
     return result
+  }
+
+  // 同一账号可能在分组和号池里各被判定一次，按账号去重后取最早恢复时间
+  _buildExhaustedError(exclusions) {
+    const byAccount = new Map()
+    for (const item of exclusions) {
+      if (Number.isFinite(item?.until)) {
+        byAccount.set(item.accountId, item)
+      }
+    }
+    const temporal = [...byAccount.values()]
+    if (temporal.length === 0) {
+      return null
+    }
+    const resetAt = Math.min(...temporal.map((item) => item.until))
+    return new DroidAccountsExhaustedError(resetAt, temporal)
   }
 
   async _ensureLastUsedUpdated(accountId) {
@@ -100,6 +161,9 @@ class DroidScheduler {
 
     let candidates = []
     let isDedicatedBinding = false
+    // 只收集因临时原因（额度用尽 / temp_unavailable）被排除的账号；
+    // 不健康、不可调度、endpoint 不匹配的账号不参与最早恢复时间的计算
+    const exclusions = []
 
     if (apiKeyData?.droidAccountId) {
       const binding = apiKeyData.droidAccountId
@@ -108,14 +172,19 @@ class DroidScheduler {
         logger.info(
           `🤖 API Key ${apiKeyData.name || apiKeyData.id} 绑定 Droid 分组 ${groupId}，按分组调度`
         )
-        candidates = await this._loadGroupAccounts(groupId, normalizedEndpoint)
+        candidates = await this._loadGroupAccounts(groupId, normalizedEndpoint, exclusions)
       } else {
         const account = await droidAccountService.getAccount(binding)
         if (account) {
-          const isTempUnavailable = await upstreamErrorHelper.isTempUnavailable(account.id, 'droid')
-          if (isTempUnavailable) {
+          // 与原逻辑一致：只有临时不可用才回退号池；本身不可用的绑定账号不计入恢复时间
+          const block = await this._checkBlock(
+            account,
+            this._isUsableFor(account, normalizedEndpoint) ? exclusions : null,
+            'bound account'
+          )
+          if (block.blocked) {
             logger.warn(
-              `⏱️ Bound Droid account ${account.name || account.id} temporarily unavailable, falling back to pool`
+              `⏱️ Bound Droid account ${account.name || account.id} unavailable (${block.reason}) until ${formatResetTime(block.until)}, falling back to pool`
             )
           } else {
             candidates = [account]
@@ -129,28 +198,25 @@ class DroidScheduler {
       candidates = await droidAccountService.getSchedulableAccounts(normalizedEndpoint)
     }
 
-    const syncFiltered = candidates.filter(
-      (account) =>
-        account &&
-        isAccountHealthy(account) &&
-        this._isAccountSchedulable(account) &&
-        this._matchesEndpoint(account, normalizedEndpoint)
+    const syncFiltered = candidates.filter((account) =>
+      this._isUsableFor(account, normalizedEndpoint)
     )
     const filteredResults = await Promise.all(
       syncFiltered.map(async (account) => {
-        const isTempUnavailable = await upstreamErrorHelper.isTempUnavailable(account.id, 'droid')
-        if (isTempUnavailable) {
-          logger.debug(
-            `⏭️ Skipping Droid account ${account.name || account.id} - temporarily unavailable`
-          )
-          return null
-        }
-        return account
+        const block = await this._checkBlock(account, exclusions, 'account')
+        return block.blocked ? null : account
       })
     )
     const filtered = filteredResults.filter(Boolean)
 
     if (filtered.length === 0) {
+      const exhausted = this._buildExhaustedError(exclusions)
+      if (exhausted) {
+        logger.warn(
+          `⏳ 所有 Droid 候选账号暂不可用（${exhausted.exclusions.length} 个因额度用尽或临时暂停被排除），最早 ${formatResetTime(exhausted.resetAt)} 恢复`
+        )
+        throw exhausted
+      }
       throw new Error(
         `No available accounts for endpoint ${normalizedEndpoint}${apiKeyData?.droidAccountId ? ' (respecting binding)' : ''}`
       )
@@ -194,4 +260,7 @@ class DroidScheduler {
   }
 }
 
-module.exports = new DroidScheduler()
+const droidScheduler = new DroidScheduler()
+droidScheduler.DroidAccountsExhaustedError = DroidAccountsExhaustedError
+
+module.exports = droidScheduler

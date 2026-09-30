@@ -1,6 +1,7 @@
 const express = require('express')
 const crypto = require('crypto')
 const droidAccountService = require('../../services/account/droidAccountService')
+const droidUsageWindowService = require('../../services/droidUsageWindowService')
 const accountGroupService = require('../../services/accountGroupService')
 const apiKeyService = require('../../services/apiKeyService')
 const redis = require('../../models/redis')
@@ -475,6 +476,35 @@ router.put('/droid-accounts/:id/toggle-schedulable', authenticateAdmin, async (r
   }
 })
 
+// 获取 Droid 账户 5h / 7d / 30d 额度窗口（必须注册在 /droid-accounts/:id 之前）
+// ?accountIds=a,b（缺省为全部 Droid 账户）&force=1（跳过 chat-usage 快照缓存）
+router.get('/droid-accounts/usage-windows', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountIds: rawIds, force: rawForce } = req.query || {}
+    let accountIds = null
+    if (rawIds !== undefined) {
+      const joined = Array.isArray(rawIds) ? rawIds.join(',') : String(rawIds)
+      accountIds = joined
+        .split(',')
+        .map((id) => id.trim())
+        .filter((id) => /^[\w-]{1,64}$/.test(id))
+        .slice(0, 200)
+      if (accountIds.length === 0) {
+        return res.json({ success: true, data: {} })
+      }
+    }
+    const force = rawForce === '1' || rawForce === 'true'
+
+    const data = await droidUsageWindowService.getUsageWindows(accountIds, { force })
+    return res.json({ success: true, data })
+  } catch (error) {
+    logger.error('❌ Failed to get Droid usage windows:', error)
+    return res.status(500).json({
+      error: { message: error.message, type: 'server_error', code: 'droid_usage_windows_failed' }
+    })
+  }
+})
+
 // 获取单个 Droid 账户详细信息
 router.get('/droid-accounts/:id', authenticateAdmin, async (req, res) => {
   try {
@@ -690,8 +720,8 @@ router.post('/droid-accounts/:accountId/test', authenticateAdmin, async (req, re
   }
 })
 
-// 重置 Droid 账户状态
-router.post('/:accountId/reset-status', authenticateAdmin, async (req, res) => {
+// 重置 Droid 账户状态（同时清除额度限额记录）
+router.post('/droid-accounts/:accountId/reset-status', authenticateAdmin, async (req, res) => {
   try {
     const { accountId } = req.params
     const result = await droidAccountService.resetAccountStatus(accountId)

@@ -1,5 +1,6 @@
 const BaseBalanceProvider = require('./baseBalanceProvider')
 const droidAccountService = require('../account/droidAccountService')
+const { resolveFactoryPeriodEndMs } = require('../../utils/factoryUsageLimit')
 
 // 非官方接口（开源工具 droid-switch 的用法），返回当前组织成员的 token 配额与用量
 const FACTORY_CHAT_USAGE_URL = 'https://app.factory.ai/api/organization/members/chat-usage'
@@ -144,8 +145,13 @@ class DroidBalanceProvider extends BaseBalanceProvider {
       remaining: Math.max(0, total - used),
       percentage,
       overage: toFiniteNumber(standard.orgOverageUsed) ?? 0,
-      resetAt: toIsoOrNull(usage.endDate)
+      resetAt: this._resolveResetAt(usage)
     }
+  }
+
+  // 与额度窗口（droidUsageWindowService）共用同一条周期结束规则
+  _resolveResetAt(usage) {
+    return toIsoOrNull(resolveFactoryPeriodEndMs(usage.startDate, usage.endDate))
   }
 
   // 防御：上游错误信息理论上不含凭证，这里仍然兜底去掉

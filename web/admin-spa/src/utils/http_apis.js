@@ -210,6 +210,17 @@ export const exchangeDroidCodeApi = (data) =>
   request({ url: '/admin/droid-accounts/exchange-code', method: 'POST', data })
 export const getDroidAccountByIdApi = (id) =>
   request({ url: `/admin/droid-accounts/${id}`, method: 'GET' })
+// force=1 时后端会逐个调用 Factory chat-usage（并发 3，单次最长 15s），放宽超时
+export const getDroidUsageWindowsApi = ({ accountIds = [], force = false } = {}) =>
+  request({
+    url: '/admin/droid-accounts/usage-windows',
+    method: 'GET',
+    params: {
+      ...(accountIds.length > 0 ? { accountIds: accountIds.join(',') } : {}),
+      ...(force ? { force: 1 } : {})
+    },
+    timeout: 90000
+  })
 
 // Grok 账户
 export const getGrokAccountsApi = () => request({ url: '/admin/grok-accounts', method: 'GET' })

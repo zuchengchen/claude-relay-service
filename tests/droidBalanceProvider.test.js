@@ -110,7 +110,7 @@ describe('DroidBalanceProvider', () => {
       { id: 'k1', key: 'fk-broken', status: 'error' },
       { id: 'k2', key: 'fk-active', status: 'active' }
     ])
-    // 没有 usedRatio 时按 used / total 计算；没有 endDate 时 resetAt 为 null
+    // 没有 usedRatio 时按 used / total 计算；endDate 为 null 时 resetAt = startDate + 7d
     provider.makeRequest.mockResolvedValue(
       buildUsageResponse({ userTokens: 250, totalAllowance: 1000, usedRatio: undefined })
     )
@@ -124,6 +124,19 @@ describe('DroidBalanceProvider', () => {
     expect(result.quota).toEqual(
       expect.objectContaining({ total: 1000, used: 250, remaining: 750, percentage: 25 })
     )
+    expect(result.quota.resetAt).toBe(new Date(1790665451546 + 7 * 24 * 3600 * 1000).toISOString())
+  })
+
+  it('leaves resetAt null when neither endDate nor startDate is present', async () => {
+    droidAccountService.getAccount.mockResolvedValue({
+      id: 'droid-nodates',
+      authenticationMethod: 'GoogleOAuth',
+      accessToken: TOKEN
+    })
+    provider.makeRequest.mockResolvedValue(buildUsageResponse({}, { startDate: null }))
+
+    const result = await provider.queryBalance({ id: 'droid-nodates' })
+
     expect(result.quota.resetAt).toBeNull()
   })
 
