@@ -914,11 +914,7 @@
                     :account-id="account.id"
                     :initial-balance="account.balanceInfo"
                     :platform="account.platform"
-                    :query-mode="
-                      account.platform === 'gemini' && account.oauthProvider === 'antigravity'
-                        ? 'auto'
-                        : 'local'
-                    "
+                    :query-mode="getBalanceQueryMode(account)"
                     @error="(error) => handleBalanceError(account.id, error)"
                     @refreshed="(data) => handleBalanceRefreshed(account.id, data)"
                   />
@@ -1750,11 +1746,7 @@
               :account-id="account.id"
               :initial-balance="account.balanceInfo"
               :platform="account.platform"
-              :query-mode="
-                account.platform === 'gemini' && account.oauthProvider === 'antigravity'
-                  ? 'auto'
-                  : 'local'
-              "
+              :query-mode="getBalanceQueryMode(account)"
               @error="(error) => handleBalanceError(account.id, error)"
               @refreshed="(data) => handleBalanceRefreshed(account.id, data)"
             />
@@ -3381,23 +3373,34 @@ const paginatedAccounts = computed(() => {
   return sortedAccounts.value.slice(start, end)
 })
 
+// 余额/配额查询模式：Antigravity 与 Droid 走 auto（先读缓存，无缓存再调用远程 API）
+const getBalanceQueryMode = (account) => {
+  if (account?.platform === 'droid') return 'auto'
+  if (account?.platform === 'gemini' && account?.oauthProvider === 'antigravity') return 'auto'
+  return 'local'
+}
+
+// 可触发远程刷新的账户：Droid（Factory 配额 API），或已启用且配置了余额脚本的账户
+const isBalanceRefreshable = (account) => {
+  if (account?.platform === 'droid') return true
+  const info = account?.balanceInfo
+  return info?.scriptEnabled !== false && !!info?.scriptConfigured
+}
+
 const canRefreshVisibleBalances = computed(() => {
   const targets = paginatedAccounts.value
   if (!Array.isArray(targets) || targets.length === 0) {
     return false
   }
 
-  return targets.some((account) => {
-    const info = account?.balanceInfo
-    return info?.scriptEnabled !== false && !!info?.scriptConfigured
-  })
+  return targets.some((account) => isBalanceRefreshable(account))
 })
 
 const refreshBalanceTooltip = computed(() => {
   if (accountsLoading.value) return '正在加载账户...'
   if (refreshingBalances.value) return '刷新中...'
-  if (!canRefreshVisibleBalances.value) return '当前页未配置余额脚本，无法刷新'
-  return '刷新当前页余额（仅对已配置余额脚本的账户生效）'
+  if (!canRefreshVisibleBalances.value) return '当前页没有可刷新余额/配额的账户'
+  return '刷新当前页余额/配额（Droid 账户查询 Factory 配额，其他账户需已配置余额脚本）'
 })
 
 // 余额刷新成功回调
@@ -3423,13 +3426,10 @@ const refreshVisibleBalances = async () => {
     return
   }
 
-  const eligibleTargets = targets.filter((account) => {
-    const info = account?.balanceInfo
-    return info?.scriptEnabled !== false && !!info?.scriptConfigured
-  })
+  const eligibleTargets = targets.filter((account) => isBalanceRefreshable(account))
 
   if (eligibleTargets.length === 0) {
-    showToast('当前页没有配置余额脚本的账户', 'warning')
+    showToast('当前页没有可刷新余额/配额的账户', 'warning')
     return
   }
 
@@ -3443,15 +3443,22 @@ const refreshVisibleBalances = async () => {
           const response = await httpApis.refreshAccountBalanceApi(account.id, {
             platform: account.platform
           })
-          return { id: account.id, success: !!response?.success, data: response?.data || null }
+          const data = response?.data || null
+          // success=true 但 data.status=error 表示远程查询失败（已降级到本地统计），计为失败
+          return {
+            id: account.id,
+            success: !!response?.success && data?.status !== 'error',
+            data
+          }
         } catch (error) {
           return { id: account.id, success: false, error: error?.message || '刷新失败' }
         }
       })
     )
 
+    // 失败结果也写回，让对应行显示错误信息（与单行刷新行为一致）
     const updatedMap = results.reduce((map, item) => {
-      if (item.success && item.data) {
+      if (item.data) {
         map[item.id] = item.data
       }
       return map
@@ -3460,7 +3467,7 @@ const refreshVisibleBalances = async () => {
     const successCount = results.filter((r) => r.success).length
     const failCount = results.length - successCount
 
-    const skippedText = skippedCount > 0 ? `，跳过 ${skippedCount} 个未配置脚本` : ''
+    const skippedText = skippedCount > 0 ? `，跳过 ${skippedCount} 个不可刷新的账户` : ''
     if (Object.keys(updatedMap).length > 0) {
       accounts.value = accounts.value.map((account) => {
         const balanceInfo = updatedMap[account.id]
@@ -3536,7 +3543,11 @@ const loadBalanceCacheForAccounts = async () => {
     return
   }
 
-  const platforms = Array.from(new Set(current.map((acc) => acc.platform).filter(Boolean)))
+  // Droid 行由 BalanceDisplay 以 auto 模式自行加载 Factory 配额；批量接口只支持 local，
+  // 晚到的结果会经 initialBalance 的 watch 覆盖单行拿到的配额，所以这里跳过 droid
+  const platforms = Array.from(
+    new Set(current.map((acc) => acc.platform).filter((p) => p && p !== 'droid'))
+  )
   if (platforms.length === 0) {
     return
   }

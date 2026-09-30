@@ -94,6 +94,13 @@
       </div>
 
       <div v-else-if="quotaInfo" class="space-y-1">
+        <!-- Factory 配额单位是 token，不是美元 -->
+        <div
+          v-if="isFactoryTokenQuota"
+          class="text-xs font-medium text-gray-500 dark:text-gray-400"
+        >
+          Factory Token 配额
+        </div>
         <div class="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400">
           <span>已用: {{ formatQuotaNumber(quotaInfo.used) }}</span>
           <span>剩余: {{ formatQuotaNumber(quotaInfo.remaining) }}</span>
@@ -184,6 +191,10 @@ const isAntigravityQuota = computed(() => {
   return balanceData.value?.quota?.type === 'antigravity'
 })
 
+const isFactoryTokenQuota = computed(() => {
+  return balanceData.value?.quota?.type === 'factory_tokens'
+})
+
 const antigravityRows = computed(() => {
   if (!isAntigravityQuota.value) return []
 
@@ -225,7 +236,7 @@ const quotaBarClass = computed(() => {
 })
 
 const canRefresh = computed(() => {
-  // antigravity 配额：允许直接触发 Provider 刷新（无需脚本）
+  // antigravity / droid 配额：允许直接触发 Provider 刷新（无需脚本）
   if (props.queryMode === 'api' || props.queryMode === 'auto') {
     return true
   }
@@ -247,6 +258,9 @@ const refreshTitle = computed(() => {
   }
   if (isAntigravityQuota.value) {
     return '刷新配额（调用 Antigravity API）'
+  }
+  if (props.platform === 'droid') {
+    return '刷新配额（调用 Factory API）'
   }
   return '刷新余额（调用脚本配置的余额 API）'
 })

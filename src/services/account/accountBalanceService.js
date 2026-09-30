@@ -20,19 +20,8 @@ class AccountBalanceService {
   }
 
   getSupportedPlatforms() {
-    return [
-      'claude',
-      'claude-console',
-      'gemini',
-      'gemini-api',
-      'openai',
-      'openai-responses',
-      'azure_openai',
-      'bedrock',
-      'droid',
-      'grok',
-      'ccr'
-    ]
+    // Droid-only sidecar：仅 Droid 账户有账户服务，其余平台已移除
+    return ['droid']
   }
 
   normalizePlatform(platform) {
@@ -305,11 +294,11 @@ class AccountBalanceService {
 
     const quotaFromLocal = this._buildQuotaFromLocal(account, localStatistics)
 
-    // 安全限制：queryApi=auto 仅用于 Antigravity（gemini + oauthProvider=antigravity）账户
-    const effectiveQueryMode =
-      queryMode === 'auto' && !(platform === 'gemini' && account?.oauthProvider === 'antigravity')
-        ? 'local'
-        : queryMode
+    // 安全限制：queryApi=auto 仅用于 Antigravity（gemini + oauthProvider=antigravity）和 Droid 账户
+    // Droid：auto 先读 1h 缓存，无缓存才调用 Factory chat-usage（仅成功结果会写缓存）
+    const autoAllowed =
+      (platform === 'gemini' && account?.oauthProvider === 'antigravity') || platform === 'droid'
+    const effectiveQueryMode = queryMode === 'auto' && !autoAllowed ? 'local' : queryMode
 
     // local: 仅本地统计/缓存；auto: 优先缓存，无缓存则尝试远程 Provider（并缓存结果）
     if (effectiveQueryMode !== 'api') {
